@@ -1071,7 +1071,7 @@
   function save() {
     const code = generateSelected();
     toast('Saving ' + fileName() + '…', '');
-    fetch('/api/plan/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: fileName(), code: code }) })
+    fetch(SceneContext.url('/api/plan/save'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: fileName(), code: code }) })
       .then(function (r) { return r.json(); })
       .then(function (j) {
         if (j.ok) { status('saved → ' + j.path + '  (run: cramera-live ' + j.path + ')', 'ok'); toast('✓ Saved to ' + j.path.replace(/^.*\/coraplex\//, 'coraplex/'), 'ok'); }
@@ -1081,7 +1081,7 @@
   }
 
   // ---------- live 3D capture ----------
-  function bridgeUrl() { return 'http://' + window.location.hostname + ':8765'; }
+  function bridgeUrl() { return SceneContext.liveUrl(); }
   function quatToYaw(q) { // q = [qx,qy,qz,qw] -> yaw
     return Math.atan2(2 * (q[3] * q[2] + q[0] * q[1]), 1 - 2 * (q[1] * q[1] + q[2] * q[2]));
   }
@@ -1169,7 +1169,7 @@
   function startLive() {
     const code = generate([{ type: 'park_arms', params: { arm: 'BOTH' } }]);   // scaffold: world + objects, idle
     beginBusy('Starting scene — parsing meshes'); hideScaffoldLog();
-    fetch('/api/plan/scaffold', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: code }) })
+    fetch(SceneContext.url('/api/plan/scaffold'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: code }) })
       .then(function (r) { return r.json(); })
       .then(function (j) { if (!j.ok) { liveStatus('failed: ' + (j.error || '?'), 'err'); return; } pollLive(0); monitorRun(); })
       .catch(function (e) { liveStatus('failed: ' + e, 'err'); });
@@ -1180,14 +1180,14 @@
     if (!steps.length) { liveStatus('add plan steps first', 'err'); return; }
     const code = generateSelected();   // full demo (matches the chosen output style), ends by performing the plan
     beginBusy('Running plan — parsing meshes'); hideScaffoldLog();
-    fetch('/api/plan/scaffold', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: code }) })
+    fetch(SceneContext.url('/api/plan/scaffold'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: code }) })
       .then(function (r) { return r.json(); })
       .then(function (j) { if (!j.ok) { liveStatus('failed: ' + (j.error || '?'), 'err'); return; } pollLive(0, '● running — watch the robot in the 3D view'); monitorRun(); })
       .catch(function (e) { liveStatus('failed: ' + e, 'err'); });
   }
   // ---- run log: surface the demo subprocess's stdout/stderr (tracebacks) ----
   function fetchScaffoldLog() {
-    return fetch('/api/plan/scaffold/log').then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; });
+    return fetch(SceneContext.url('/api/plan/scaffold/log')).then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; });
   }
   function showScaffoldLog(text) {
     const el = $('pb-scaffold-log'); if (!el) return;
@@ -1281,7 +1281,7 @@
   }
   function stopLive() {
     liveOn = false; liveSurfaces = []; stopRunMonitor();
-    fetch('/api/plan/scaffold/stop', { method: 'POST' }).then(function () { liveStatus('stopped', ''); const f=$('pb-3d'); if (f) f.src='about:blank'; }).catch(function () {});
+    fetch(SceneContext.url('/api/plan/scaffold/stop'), { method: 'POST' }).then(function () { liveStatus('stopped', ''); const f=$('pb-3d'); if (f) f.src='about:blank'; }).catch(function () {});
   }
 
   // ---------- boot ----------

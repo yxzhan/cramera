@@ -26,7 +26,7 @@
   // %% model state and loading
 
   function refreshState() {
-    fetch('/api/models/state').then(ResponseUtil.parseJson).then(function (state) {
+    fetch(SceneContext.url('/api/models/state')).then(ResponseUtil.parseJson).then(function (state) {
       if (!state.ok) return showUnavailable(state.error || 'models API unavailable');
       variables = state.variables || [];
       statusEl.textContent = state.loaded
@@ -53,7 +53,7 @@
     file.text().then(function (text) {
       // the file travels as text: python's JSON reader accepts the Infinity/NaN
       // literals circuit files carry, the browser's JSON.parse does not
-      return fetch('/api/models/load', {
+      return fetch(SceneContext.url('/api/models/load'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model_text: text, name: file.name }),
@@ -275,8 +275,8 @@
 
   // %% helpers
 
-  function postJson(url, body) {
-    return fetch(url, {
+  function postJson(route, body) {
+    return fetch(SceneContext.url(route), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

@@ -497,8 +497,13 @@ Panels.define('robot-scene', function (root, bus) {
     .then(function (r) { return r.ok ? r.json() : { default: null, scenes: [] }; })
     .catch(function () { return { default: null, scenes: [] }; })
     .then(function (index) {
-      const name = SceneContext.name() || index.default;
-      wireScenePickers(index.scenes || [], name);
+      const declared = index.scenes || [];
+      // the index's default is only usable when the bundle is actually there: the
+      // published cram-scenes index names one it does not ship, and asking for it
+      // gives a 404 instead of a scene
+      const shipped = declared.some(function (scene) { return scene.name === index.default; });
+      const name = SceneContext.name() || (shipped ? index.default : (declared[0] || {}).name) || null;
+      wireScenePickers(declared, name);
       if (!name) {
         if (statusEl) statusEl.textContent = 'No scene found — run cramera-onboard first.';
         return;
@@ -1509,8 +1514,7 @@ Panels.define('robot-scene', function (root, bus) {
     }
   }
   function liveUrl() {
-    const m = /[?&]live=([\w.:-]+)/.exec(window.location.search);
-    return 'http://' + (m ? m[1] : (window.location.hostname + ':8765'));
+    return SceneContext.liveUrl();
   }
   function probeLive() {
     fetch(liveUrl() + '/info').then(function (r) { return r.json(); })
@@ -2300,7 +2304,7 @@ Panels.define('robot-scene', function (root, bus) {
     fetch(liveUrl() + '/recording').then(function (r) { return r.json(); })
       .then(applyRecordingStatus)
       .catch(function () {
-        fetch('/api/recording/status').then(function (r) { return r.json(); })
+        fetch(SceneContext.url('/api/recording/status')).then(function (r) { return r.json(); })
           .then(applyRecordingStatus)
           .catch(function () {});
       });
@@ -2350,7 +2354,7 @@ Panels.define('robot-scene', function (root, bus) {
   });
 
   recordDiscardBtn.addEventListener('click', function () {
-    postRecordingAction('/recording/discard', '/api/recording/discard').then(function () {
+    postRecordingAction('/recording/discard', SceneContext.url('/api/recording/discard')).then(function () {
       closeSavePanel();
       pollRecordingStatus();
       if (RecordingMode.isRecordingScene(SceneContext.name())) {
@@ -2381,7 +2385,7 @@ Panels.define('robot-scene', function (root, bus) {
       body.firstFrame = trim.first;
       body.lastFrame = trim.last;
     }
-    postRecordingAction('/recording/save', '/api/recording/save', body)
+    postRecordingAction('/recording/save', SceneContext.url('/api/recording/save'), body)
       .then(function (d) {
         if (!d || !d.ok) {
           window.alert('Could not save the recording: ' + ((d && d.error) || 'unknown error'));

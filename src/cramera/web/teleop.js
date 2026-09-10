@@ -7,7 +7,7 @@
   'use strict';
 
   const $ = function (id) { return document.getElementById(id); };
-  const bridgeUrl = function () { return 'http://' + window.location.hostname + ':8765'; };
+  const bridgeUrl = function () { return SceneContext.liveUrl(); };
 
   let liveOn = false;
   let dragging = false;
@@ -107,12 +107,12 @@
     const line = lines[lines.length - 1].replace(/^(INFO|WARNING|DEBUG|ERROR):[^:]*:/, '').trim();
     return line.length > 72 ? line.slice(0, 71) + '…' : line;
   }
-  function fetchLog() { return fetch('/api/plan/scaffold/log').then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; }); }
+  function fetchLog() { return fetch(SceneContext.url('/api/plan/scaffold/log')).then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; }); }
 
   // ---------- scene lifecycle ----------
   function startScene() {
     beginBusy('Starting scene — parsing meshes');
-    fetch('/api/plan/scaffold', {
+    fetch(SceneContext.url('/api/plan/scaffold'), {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ code: scaffoldCode($('te-env').value) })
     }).then(function (r) { return r.json(); })
@@ -159,7 +159,7 @@
     liveOn = false;
     if (cameraOn) toggleCamera();
     fetch(bridgeUrl() + '/teleop/stop', { method: 'POST' }).catch(function () {});
-    fetch('/api/plan/scaffold/stop', { method: 'POST' })
+    fetch(SceneContext.url('/api/plan/scaffold/stop'), { method: 'POST' })
       .then(function () { status('stopped'); const f = $('te-3d'); if (f) f.src = 'about:blank'; })
       .catch(function () {});
   }
