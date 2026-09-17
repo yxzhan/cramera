@@ -78,6 +78,7 @@ from cramera.live.markers import MarkerEntry, MarkerStore
 from cramera.live.shape_catalog import ShapeEntry, served_mesh_file, shape_entry
 from cramera.live.transforms import TransformGraph, TransformSnapshot
 from cramera.mesh_format import MeshFormat
+from cramera.live.overlay import is_overlay_body, overlay_name
 from cramera.palette import ObjectPalette
 from cramera.robot_parts import RobotPartAnnotation
 
@@ -1235,7 +1236,7 @@ class Bridge:
         try:
             for body in self.world.bodies:
                 name = str(body.name)
-                if MeshFormat.of_path(name.split("/")[-1]) is not None:
+                if is_overlay_body(body):
                     continue
                 connection = body.parent_connection
                 entries.append(
@@ -2020,8 +2021,8 @@ class Bridge:
         for full_name, body in bodies_by_name.items():
             if body is robot_root:
                 continue
-            basename = full_name.split("/")[-1]
-            if MeshFormat.of_path(basename) is not None:
+            basename = overlay_name(body)
+            if basename is not None:
                 bodies[basename] = body
         return bodies
 

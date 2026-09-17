@@ -28,6 +28,7 @@ from semantic_digital_twin.world_description.world_entity import Body
 
 from cramera import paths
 from cramera.generated_json import GeneratedJson
+from cramera.live.overlay import is_overlay_body
 from cramera.live.bridge import Bridge
 from cramera.mesh_format import MeshFormat
 from cramera.onboard.bundle_urdf import BundleReport
@@ -106,7 +107,7 @@ def bundle_world_models(
     environment_bodies = [
         body
         for body in world.bodies_topologically_sorted
-        if body not in set(robot_bodies) and not _is_overlay_body(body)
+        if body not in set(robot_bodies) and not is_overlay_body(body)
     ]
     if environment_bodies:
         report = UrdfDocument.of_bodies(
@@ -209,19 +210,6 @@ def _robot_bodies(world: World, robot: Optional[AbstractRobot]) -> List[Body]:
         return []
     subtree = set(world.get_kinematic_structure_entities_of_branch(robot.root))
     return [body for body in world.bodies_topologically_sorted if body in subtree]
-
-
-def _is_overlay_body(body: Body) -> bool:
-    """
-    Whether the object overlay renders this body instead of the scene bundle.
-
-    Bodies named like mesh files are demo objects that spawn, move and disappear mid-
-    run; the overlay streams their poses live, so baking them into the bundle would show
-    them twice.
-
-    :param body: The body to check.
-    """
-    return MeshFormat.of_path(str(body.name).split("/")[-1]) is not None
 
 
 def _model_payload(report: BundleReport, is_robot: bool) -> Dict[str, Any]:

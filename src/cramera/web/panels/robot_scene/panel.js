@@ -56,6 +56,8 @@ Panels.define('robot-scene', function (root, bus) {
     '  <div id="step-caption" class="step-caption hidden"></div>' +
     '  <div class="stage-hint">drag orbit · scroll zoom · right-drag pan · drag objects &amp; the blue place target</div>' +
     '  <button id="scene-pop-out" class="pop-out" title="Open the scene alone in a window of its own — drag it onto another screen and press F11 for full screen">⧉ Pop out</button>' +
+    '  <button id="scene-vr" class="enter-vr" style="display:none">🥽 Enter VR</button>' +
+    '  <div id="vr-stats" class="vr-stats hidden"></div>' +
     '</div>' +
     '<div class="workflow">' +
     '  <div class="workflow-head"><span class="wf-btns">' +
@@ -1584,24 +1586,59 @@ Panels.define('robot-scene', function (root, bus) {
         renderMarkerNamespaces();
       }).catch(function () {});
   }
+  // The overlay is reconciled against the published set, not rebuilt from it. A
+  // live demo republishes every marker whenever any one of them moves — and a
+  // headset viewer's avatar moves the whole time someone is wearing it — so
+  // discarding every Object3D and building it again at the poll rate is the
+  // difference between an overlay that sits still and one that stutters. A marker
+  // whose shape has not changed keeps its geometry and is simply moved.
+  // prototype-free, so a marker key can never be read as an inherited property
+  const markerObjects = Object.create(null);   // MarkerSpecs.key -> {object, marker}
+
+  function disposeMarker(object) {
+    markerRoot.remove(object);
+    object.traverse(function (c) {
+      if (c.geometry) c.geometry.dispose();
+      if (c.material) { c.material.map && c.material.map.dispose(); c.material.dispose(); }
+    });
+  }
+
   function rebuildMarkers() {
-    clearMarkers();
     const markers = lastMarkerPayload ? lastMarkerPayload.markers : [];
+    const present = Object.create(null);
     MarkerSettings.visibleMarkers(markers, hiddenMarkerNs).forEach(function (marker) {
+      const key = MarkerSpecs.key(marker);
+      present[key] = true;
+      const held = markerObjects[key];
+      if (held && MarkerSpecs.sameShape(held.marker, marker)) {
+        const pose = marker.pose || [0, 0, 0, 0, 0, 0, 1];
+        held.object.position.set(pose[0], pose[1], pose[2]);
+        held.object.quaternion.set(pose[3], pose[4], pose[5], pose[6]);
+        held.marker = marker;
+        return;
+      }
+      if (held) disposeMarker(held.object);
+      delete markerObjects[key];
       const built = buildMarker(marker);
-      if (built) markerRoot.add(built);
+      if (!built) return;                       // a kind the viewer cannot draw
+      markerObjects[key] = { object: built, marker: marker };
+      markerRoot.add(built);
+    });
+    // whatever stopped being published, or was just hidden, goes
+    Object.keys(markerObjects).forEach(function (key) {
+      if (present[key]) return;
+      disposeMarker(markerObjects[key].object);
+      delete markerObjects[key];
     });
     needsRender = true;
   }
   function clearMarkers() {
-    while (markerRoot.children.length) {
-      const child = markerRoot.children[0];
-      markerRoot.remove(child);
-      child.traverse(function (c) {
-        if (c.geometry) c.geometry.dispose();
-        if (c.material) { c.material.map && c.material.map.dispose(); c.material.dispose(); }
-      });
-    }
+    Object.keys(markerObjects).forEach(function (key) {
+      disposeMarker(markerObjects[key].object);
+      delete markerObjects[key];
+    });
+    // nothing else adds to markerRoot, but a stray would otherwise never be freed
+    while (markerRoot.children.length) disposeMarker(markerRoot.children[0]);
   }
   function markerMaterial(spec) {
     return new THREE.MeshStandardMaterial({
@@ -1915,8 +1952,39 @@ Panels.define('robot-scene', function (root, bus) {
       composer.addPass(copy);
     } catch (e) { composer = null; }
   })();
+  // %% VR
+  // A headset session takes the camera over: it renders both eyes into the XR
+  // framebuffer, at its own cadence, with its own pose. The three places below
+  // that assume a desktop camera — the post-processing chain, the on-demand
+  // render gate and the canvas resize — all stand down while one runs.
+  const vrStatsEl = $('vr-stats');
+  const vr = VRMode.install({
+    renderer: renderer,
+    scene: scene3,
+    camera: camera,
+    controls: controls,
+    ground: ground,
+    worldRoot: worldRoot,
+    // where to publish the headset's avatar, or null when no demo is running —
+    // an avatar is a marker in the live world, so there has to be a live world
+    live: function () { return liveOn ? liveUrl() : null; },
+    button: $('scene-vr'),
+    onChange: function (presenting) {
+      if (presenting) return;
+      resize();                    // the session left the canvas at headset size
+      needsRender = true;
+      const stats = vr.stats();
+      if (!stats || !vrStatsEl) return;
+      vrStatsEl.textContent = 'last VR session: ' + stats.fps.toFixed(1) + ' fps avg · '
+        + stats.worstMs.toFixed(0) + ' ms worst · ' + stats.frames + ' frames';
+      vrStatsEl.classList.remove('hidden');
+    },
+  });
+
   function renderFrame() {
-    if (composer) composer.render();
+    // EffectComposer renders through its own targets, which are not the XR
+    // framebuffer — SSAO is a desktop-only pass
+    if (composer && !renderer.xr.isPresenting) composer.render();
     else renderer.render(scene3, camera);
   }
 
@@ -1925,7 +1993,7 @@ Panels.define('robot-scene', function (root, bus) {
   let running = true;
   function tick() {
     if (!running) return;
-    requestAnimationFrame(tick);
+    const delta = clock.getDelta();
     // imported models finish loading asynchronously, so their materials are re-tamed
     // for a while after mount; once that window closes the loop goes on-demand again
     if (models.length && clock.getElapsedTime() < MATERIAL_SETTLE_SECONDS) {
@@ -1942,7 +2010,11 @@ Panels.define('robot-scene', function (root, bus) {
       });
       needsRender = true;
     }
-    const moved = controls.update();
+    // while a headset presents, the camera's pose is WebXR's to write — the orbit
+    // controls would be writing over it every frame
+    const presenting = renderer.xr.isPresenting;
+    const moved = presenting ? false : controls.update();
+    if (presenting) vr.update(delta);
     if (playing && traj && !liveOn) {
       playhead += ((traj.framesPerSecond || 30) / 60) * 1.6 * playbackSpeedMultiplier;
       if (playhead >= traj.frames.length - 1) { playhead = traj.frames.length - 1; playing = false; stepCb('__done__'); }
@@ -1951,13 +2023,18 @@ Panels.define('robot-scene', function (root, bus) {
       if (follow && robotCenter(_target)) controls.target.lerp(_target, 0.06);
       needsRender = true;
     }
-    if (!needsRender && !moved && !controls.autoRotate) return;
+    // a headset needs every frame; the on-demand gate is a desktop economy
+    if (!presenting && !needsRender && !moved && !controls.autoRotate) return;
     renderFrame();
     needsRender = false;
   }
-  tick();
+  // setAnimationLoop, not requestAnimationFrame: while a session presents, the
+  // frames have to come from the headset's own clock
+  renderer.setAnimationLoop(tick);
 
   function resize() {
+    // the XR framebuffer is sized by the session, not by the container
+    if (renderer.xr.isPresenting) return;
     const w = container.clientWidth, h = container.clientHeight;
     if (!w || !h) return;
     renderer.setSize(w, h, false);
@@ -2710,7 +2787,8 @@ Panels.define('robot-scene', function (root, bus) {
 
   return {
     destroy: function () {
-      running = false;                       // stops the requestAnimationFrame loop
+      running = false;
+      renderer.setAnimationLoop(null);       // stops the render loop
       clearInterval(probeTimer);
       clearInterval(recordingProbeTimer);
       if (liveTimer) { clearInterval(liveTimer); liveTimer = null; }

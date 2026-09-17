@@ -27,6 +27,10 @@ HTTP endpoints of the live bridge (default port 8765).
     POST /move   queue an object move (applied on the simulation thread)
     POST /joint  {joint, position, final?} queue a joint position set by hand in the
                   viewer (applied on the simulation thread, held within the joint's limits)
+    POST /avatar {viewer, parts: [{name, position, quaternion}, ...]} -- where a headset
+                  viewer's head and hands are, published into the marker overlay so
+                  every viewer sees them; {viewer, gone: true} takes them back out
+                  (see :mod:`cramera.live.avatar`)
     POST /recording/stop     finalize the current recording into a scene bundle under
                               :func:`cramera.paths.local_scenes_directory`
     POST /recording/discard  drop the current recording and its bundle, if any
@@ -72,6 +76,7 @@ from cramera.live.teleop import (
     TeleopRequest,
     TeleopUnavailable,
 )
+from cramera.live.avatar import observe_avatar
 from cramera.live.query import NoQuerySourceRegistered
 from cramera.live.frame_range import FrameRange, InvalidFrameRange
 from cramera.live.live_bundle import build_live_scene
@@ -301,6 +306,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             return self.answer_asked_question()
         if self.path.startswith("/marker_topics"):
             return self.set_marker_topic()
+        if self.path.startswith("/avatar"):
+            return self.place_viewer_avatar()
         if self.path == "/recording/stop":
             return self._stop_recording()
         if self.path == "/recording/discard":
@@ -454,6 +461,20 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 str(payload.get("topic") or ""), bool(payload.get("subscribed", True))
             )
         )
+
+    def place_viewer_avatar(self) -> None:
+        """
+        Publish where a headset viewer is standing into the marker overlay.
+
+        The pose arrives in the world frame and is validated in
+        :func:`cramera.live.avatar.observe_avatar`, which also sweeps avatars whose
+        headsets have gone quiet.
+        """
+        payload = self._posted_payload()
+        if payload is None:
+            return self._send_json({"ok": False, "error": "expected a JSON object"}, code=400)
+        body, code = observe_avatar(self.bridge, payload)
+        self._send_json(body, code=code)
 
     def queue_requested_move(self) -> None:
         """

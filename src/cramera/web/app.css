@@ -63,6 +63,15 @@ body{
 }
 .pop-out:hover,.pop-out:focus-visible{color:var(--accent);border-color:var(--accent);outline:none}
 
+/* headset entry — sits beside the pop-out button, hidden unless WebXR answers */
+.enter-vr{
+  position:absolute;right:92px;bottom:12px;z-index:5;
+  background:rgba(12,14,19,.72);border:1px solid var(--line);color:var(--muted);
+  border-radius:6px;padding:4px 9px;font-size:12px;cursor:pointer;white-space:nowrap;
+}
+.enter-vr:hover,.enter-vr:focus-visible{color:var(--accent);border-color:var(--accent);outline:none}
+.vr-stats{position:absolute;right:12px;bottom:40px;z-index:5;font-size:11px;color:var(--faint);letter-spacing:.3px}
+
 /* %% 3d stage */
 .stage{position:relative;flex:1;min-height:0;overflow:hidden;background:
   radial-gradient(700px 500px at 50% 25%, #0a0c11 0%, #050608 70%);}
