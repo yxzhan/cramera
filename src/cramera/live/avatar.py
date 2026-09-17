@@ -1,25 +1,30 @@
 """
-Where a headset viewer is standing, as markers in the running demo's world.
+Where the people inside the scene are, as markers in the running demo's world.
 
-Someone who enters VR joins the demo the way every other CRAM component announces
-itself to the scene: by publishing markers. :mod:`cramera.live.markers` reads marker
-messages duck-typed and is deliberately free of ROS imports, so a pose a browser
-POSTs becomes a marker without a ROS round trip — and every viewer already renders
-it, the desktop page included, with no client change at all.
+Someone who enters the scene — through a headset, or walking with a keyboard or a
+thumb — joins the demo the way every other CRAM component announces itself to it: by
+publishing markers. :mod:`cramera.live.markers` reads marker messages duck-typed and
+is deliberately free of ROS imports, so a pose a browser POSTs becomes a marker
+without a ROS round trip, and every viewer already renders it with no client change
+at all.
 
-A viewer is drawn as the parts the headset actually tracks: a block for the head and
-one for each controller it is reporting. The parts arrive together in one post so
-the whole viewer moves in one step, and :data:`PART_SHAPES` is the one place that
-says what each is drawn as — the ``visualization_msgs`` vocabulary has no mesh
+A viewer is drawn as the parts their device actually tracks: a block for the head,
+one for each controller, and a name tag above. :data:`PART_SHAPES` is the one place
+that says what each is drawn as — the ``visualization_msgs`` vocabulary has no mesh
 marker the overlay would render (see :data:`cramera.live.markers.MARKER_KINDS`), so
-these are primitives by necessity.
+these are primitives by necessity. The parts arrive together in one post, so a whole
+person moves in one step.
+
+Who is who is decided here rather than in the browser, since only the bridge sees
+everyone: each viewer is admitted to the lowest free seat and keeps it until they leave,
+which is what gives them their name and their colour.
 
 Avatars live in the bridge's marker stores, which the live bridge owns, so they are
-gone when the demo is. Within a run they are dropped when the headset says it left,
-and swept when one goes quiet — a browser that crashes mid-session never gets to say
+gone when the demo is. Within a run they are dropped when a viewer says it left, and
+swept when one goes quiet — a browser that crashes mid-session never gets to say
 goodbye. The sweep runs on each post, so the last viewer to go quiet is only
-collected once somebody else moves; a run that ends with a stale arrow in it is
-showing a viewer who really was there, which is the harmless direction to fail in.
+collected once somebody else moves; a run that ends with a stale figure in it is
+showing someone who really was there, which is the harmless direction to fail in.
 """
 
 from __future__ import annotations
@@ -64,6 +69,30 @@ arrow needs no reorienting to swap into :data:`PART_SHAPES` in place of a block.
 Its scale reads as length, shaft diameter and head diameter instead of extents.
 """
 
+TEXT_TYPE = 9
+"""
+``Marker.TEXT_VIEW_FACING``. The viewer draws one as a sprite, so it turns to face
+whoever is reading it and its orientation is never consulted.
+"""
+
+LABEL_PART = "label"
+"""
+The name tag over a viewer's head.
+
+Unlike the tracked parts, nobody posts this: the bridge puts it above whatever head
+it was sent, so a browser never has to know its own name to be labelled with it.
+"""
+
+LABEL_HEIGHT = 0.3
+"""
+How far above the head the name tag floats, in metres.
+"""
+
+NAME_FORMAT = "avatar%d"
+"""
+How a viewer's name is built from its seat number, counting from one.
+"""
+
 VIEWER_COLORS = (
     "#4ac2ff",
     "#ffb648",
@@ -94,8 +123,8 @@ class PartShape:
 
     kind: int
     """
-    The ``visualization_msgs`` marker type, from :data:`ARROW_TYPE` or
-    :data:`CUBE_TYPE`.
+    The ``visualization_msgs`` marker type, from :data:`CUBE_TYPE`,
+    :data:`ARROW_TYPE` or :data:`TEXT_TYPE`.
     """
 
     scale: Tuple[float, float, float]
@@ -218,6 +247,28 @@ def _message(
     )
 
 
+def _label_message(
+    identifier: int, identity: ViewerIdentity, head: List[float]
+) -> SimpleNamespace:
+    """
+    A viewer's name, floating :data:`LABEL_HEIGHT` above the head it belongs to.
+
+    :param identifier: The marker's id within :data:`AVATAR_NAMESPACE`.
+    :param identity: Whose name to show, and in which colour.
+    :param head: The head's position in the world frame, which is z-up.
+    """
+    message = _message(
+        identifier,
+        PartShape(TEXT_TYPE, (0.0, 0.0, 0.22)),
+        identity.color,
+        [head[0], head[1], head[2] + LABEL_HEIGHT],
+        [0.0, 0.0, 0.0, 1.0],
+        ADD_ACTION,
+    )
+    message.text = identity.name
+    return message
+
+
 def _delete(identifier: int) -> SimpleNamespace:
     """
     The message that takes one marker back out of the overlay.
@@ -230,9 +281,54 @@ def _delete(identifier: int) -> SimpleNamespace:
 
 
 @dataclass(frozen=True)
+class ViewerIdentity:
+    """
+    How one viewer is told apart from the others in the room.
+    """
+
+    seat: int
+    """
+    The viewer's seat, counting from zero: the lowest one no one else holds when they
+    arrived, freed again when they leave.
+
+    Both the name and the colour follow from it, and it is what makes them unique —
+    the colour cycle is shorter than the room can get, so two viewers can end up
+    sharing a colour, but never a seat and so never a name.
+    """
+
+    name: str
+    """
+    The name shown over their head.
+    """
+
+    color: str
+    """
+    The colour every part of them is drawn in, as ``#rrggbb``.
+    """
+
+    @classmethod
+    def of_seat(cls, seat: int) -> ViewerIdentity:
+        """
+        The identity that belongs to one seat.
+
+        :param seat: The seat, counting from zero.
+        """
+        return cls(
+            seat=seat,
+            name=NAME_FORMAT % (seat + 1),
+            color=VIEWER_COLORS[seat % len(VIEWER_COLORS)],
+        )
+
+
+@dataclass(frozen=True)
 class PartPose:
     """
     One validated part of a post, ready to be drawn.
+    """
+
+    name: str
+    """
+    Which part of the viewer this is, a key of :data:`PART_SHAPES`.
     """
 
     identifier: int
@@ -279,12 +375,12 @@ class AvatarRoster:
     Viewer identifier to the marker ids currently drawn for it.
     """
 
-    slots: Dict[str, int] = field(default_factory=dict)
+    identities: Dict[str, ViewerIdentity] = field(default_factory=dict)
     """
-    Viewer identifier to its position in :data:`VIEWER_COLORS`.
+    Viewer identifier to the name and colour it was admitted with.
 
-    A position is held for as long as the viewer is, and freed when they leave, so
-    the colours stay distinct rather than drifting apart as people come and go.
+    Both are held for as long as the viewer is and freed when they leave, so the
+    room stays legible rather than drifting into repeats as people come and go.
     """
 
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -292,44 +388,52 @@ class AvatarRoster:
     Guards the maps — posts arrive on the bridge's HTTP threads.
     """
 
-    def touch(self, viewer: str, now: float, identifiers: List[int]) -> Tuple[str, List[int]]:
+    def touch(
+        self, viewer: str, now: float, identifiers: List[int]
+    ) -> Tuple[ViewerIdentity, List[int]]:
         """
         Record a viewer's post, and report the markers it has stopped publishing.
 
         :param viewer: The viewer's identifier.
         :param now: The current monotonic time.
         :param identifiers: The marker ids this post carries.
-        :return: The viewer's colour, and the ids it showed before but no longer does.
+        :return: Who the viewer is shown as, and the ids it showed before but no
+            longer does.
         """
         with self._lock:
             dropped = [i for i in self.shown.get(viewer, []) if i not in identifiers]
             self.last_seen[viewer] = now
             self.shown[viewer] = list(identifiers)
-            if viewer not in self.slots:
-                self.slots[viewer] = self._free_slot()
-            slot = self.slots[viewer]
-        return VIEWER_COLORS[slot % len(VIEWER_COLORS)], dropped
+            return self._admit(viewer), dropped
 
-    def color_of(self, viewer: str) -> str:
+    def identity_of(self, viewer: str) -> ViewerIdentity:
         """
-        The colour a viewer is being drawn in.
+        Who a viewer is shown as, admitting them if this is the first anyone has
+        heard of them.
 
         :param viewer: The viewer's identifier.
         """
         with self._lock:
-            return VIEWER_COLORS[self.slots.get(viewer, 0) % len(VIEWER_COLORS)]
+            return self._admit(viewer)
 
-    def _free_slot(self) -> int:
+    def _admit(self, viewer: str) -> ViewerIdentity:
         """
-        The lowest colour position no current viewer holds.
+        The viewer's identity, seating them the first time one is asked for.
 
         Only ever called while :attr:`_lock` is held.
+
+        :param viewer: The viewer's identifier.
         """
-        taken = set(self.slots.values())
-        slot = 0
-        while slot in taken:
-            slot += 1
-        return slot
+        known = self.identities.get(viewer)
+        if known is not None:
+            return known
+        taken = {identity.seat for identity in self.identities.values()}
+        seat = 0
+        while seat in taken:
+            seat += 1
+        identity = ViewerIdentity.of_seat(seat)
+        self.identities[viewer] = identity
+        return identity
 
     def drop(self, viewer: str) -> List[int]:
         """
@@ -340,7 +444,7 @@ class AvatarRoster:
         """
         with self._lock:
             self.last_seen.pop(viewer, None)
-            self.slots.pop(viewer, None)
+            self.identities.pop(viewer, None)
             return self.shown.pop(viewer, [])
 
     def expired(self, now: float) -> List[int]:
@@ -359,7 +463,7 @@ class AvatarRoster:
             identifiers: List[int] = []
             for viewer in stale:
                 self.last_seen.pop(viewer, None)
-                self.slots.pop(viewer, None)
+                self.identities.pop(viewer, None)
                 identifiers.extend(self.shown.pop(viewer, []))
         return identifiers
 
@@ -399,7 +503,7 @@ def observe_avatar(bridge: Bridge, payload: Any) -> Tuple[Dict[str, Any], int]:
         return {"ok": False, "error": "no viewer id"}, 400
     now = time.monotonic()
     messages: List[SimpleNamespace] = []
-    color = ROSTER.color_of(viewer)
+    identity = ROSTER.identity_of(viewer)
 
     if payload.get("gone"):
         messages.extend(_delete(identifier) for identifier in ROSTER.drop(viewer))
@@ -427,20 +531,38 @@ def observe_avatar(bridge: Bridge, payload: Any) -> Tuple[Dict[str, Any], int]:
                     "error": "%s needs a position of 3 numbers and a quaternion of 4"
                     % name,
                 }, 400
-            poses.append(PartPose(marker_id(viewer, name), shape, position, quaternion))
+            poses.append(PartPose(name, marker_id(viewer, name), shape, position, quaternion))
+        # the name tag rides above the head rather than being posted, so a browser
+        # never has to know its own name to be labelled with it
+        head = next((pose for pose in poses if pose.name == "head"), None)
+        identifiers = [pose.identifier for pose in poses]
+        if head is not None:
+            identifiers.append(marker_id(viewer, LABEL_PART))
         # the roster is only told once every part has been read, so a post that turns
         # out to be malformed leaves the viewer as it was rather than half-moved
-        color, dropped = ROSTER.touch(viewer, now, [pose.identifier for pose in poses])
+        identity, dropped = ROSTER.touch(viewer, now, identifiers)
         messages.extend(
-            _message(pose.identifier, pose.shape, color, pose.position, pose.quaternion, ADD_ACTION)
+            _message(
+                pose.identifier, pose.shape, identity.color,
+                pose.position, pose.quaternion, ADD_ACTION,
+            )
             for pose in poses
         )
+        if head is not None:
+            messages.append(
+                _label_message(marker_id(viewer, LABEL_PART), identity, head.position)
+            )
         # a part this viewer has stopped tracking stops being drawn
         messages.extend(_delete(identifier) for identifier in dropped)
 
     messages.extend(_delete(identifier) for identifier in ROSTER.expired(now))
     bridge.observe_ros_markers(AVATAR_TOPIC, messages)
-    return {"ok": True, "viewers": ROSTER.count(), "color": color}, 200
+    return {
+        "ok": True,
+        "viewers": ROSTER.count(),
+        "name": identity.name,
+        "color": identity.color,
+    }, 200
 
 
 __all__ = [
@@ -450,6 +572,9 @@ __all__ = [
     "VIEWER_COLORS",
     "PartShape",
     "PartPose",
+    "ViewerIdentity",
+    "LABEL_PART",
+    "NAME_FORMAT",
     "SILENCE_TIMEOUT_SECONDS",
     "AvatarRoster",
     "ROSTER",

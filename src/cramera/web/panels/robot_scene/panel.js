@@ -45,7 +45,7 @@ Panels.define('robot-scene', function (root, bus) {
     '    <div id="marker-settings" class="marker-settings hidden"></div>' +
     '    <label class="lp-row" title="an axis triad on every frame of the world — URDF links and loose objects (red X, green Y, blue Z)"><input type="checkbox" id="lyr-frames"><span>TF frames</span><button id="frame-gear" class="layer-gear" title="frame axis size and names">⚙</button></label>' +
     '    <div id="frame-settings" class="frame-settings hidden"></div>' +
-    '    <label class="lp-row"><input type="checkbox" id="lyr-labels"><span>Object labels</span></label>' +
+    '    <label class="lp-row"><input type="checkbox" id="lyr-labels" checked><span>Object labels</span></label>' +
     '    <label class="lp-row"><input type="checkbox" id="lyr-floor" checked><span>Floor shadow</span></label>' +
     '    <label class="lp-row" title="Keep the robot in view: the camera glides after it while a recording plays or a live demo runs. Off, the camera stays where you pointed it"><input type="checkbox" id="lyr-follow" checked><span>Follow robot</span></label>' +
     '    <label class="lp-row" title="Attach to a running demo whenever one is reachable — including the next run after this one ends — instead of only once per page"><input type="checkbox" id="lyr-auto-live" checked><span>Auto-attach live</span></label>' +
@@ -56,7 +56,12 @@ Panels.define('robot-scene', function (root, bus) {
     '  <div id="step-caption" class="step-caption hidden"></div>' +
     '  <div class="stage-hint">drag orbit · scroll zoom · right-drag pan · drag objects &amp; the blue place target</div>' +
     '  <button id="scene-pop-out" class="pop-out" title="Open the scene alone in a window of its own — drag it onto another screen and press F11 for full screen">⧉ Pop out</button>' +
-    '  <button id="scene-vr" class="enter-vr" style="display:none">🥽 Enter VR</button>' +
+    '  <div class="stage-actions">' +
+    '    <button id="scene-walk" class="stage-action">🚶 Walk in</button>' +
+    '    <button id="scene-vr" class="stage-action" style="display:none">🥽 Enter VR</button>' +
+    '  </div>' +
+    '  <div id="walk-hint" class="walk-hint"></div>' +
+    '  <div id="viewer-name" class="viewer-name hidden"></div>' +
     '  <div id="vr-stats" class="vr-stats hidden"></div>' +
     '</div>' +
     '<div class="workflow">' +
@@ -235,7 +240,9 @@ Panels.define('robot-scene', function (root, bus) {
   const objectLabels = {};       // mesh key -> label sprite
   const liveSpawned = {};        // mesh key -> true for objects added by live mode
   const objectPending = {};      // mesh key -> true while its geometry is loading
-  let labelsOn = false;
+  // on by default, matching the layer's own checkbox: bindLayer only listens for a
+  // change, and a label reads this when it is built, so the two have to agree
+  let labelsOn = true;
   const objectIdByKey = {}, objectKeyById = {};
   const _objLoader = new THREE.STLLoader();   // no manager: for live/on-demand loads
 
@@ -955,6 +962,12 @@ Panels.define('robot-scene', function (root, bus) {
   const _target = new THREE.Vector3(), _base = new THREE.Vector3();
   function frameCamera() {
     if (!robotModel) return;
+    // Framing means placing the orbiting camera, and while someone is inside the
+    // scene the camera is not that: it is an offset inside their rig, so this would
+    // shove it metres off the axis they turn about and leave them orbiting a point
+    // instead of looking around. Scenes finish loading asynchronously, so this can
+    // land well after they walked in.
+    if (inScene()) return;
     const box = new THREE.Box3().setFromObject(robotModel.obj);
     const c = box.getCenter(new THREE.Vector3());
     controls.target.copy(c);
@@ -1092,6 +1105,7 @@ Panels.define('robot-scene', function (root, bus) {
 
   renderer.domElement.addEventListener('pointerdown', function (e) {
     if (e.button !== 0) return;
+    if (fps.active()) return;          // the canvas is steering a walking viewer
     clickX = e.clientX; clickY = e.clientY; clickArmed = true;
     if (playing) return;
     const p = pickDraggable(e);
@@ -1963,25 +1977,43 @@ Panels.define('robot-scene', function (root, bus) {
       composer.addPass(copy);
     } catch (e) { composer = null; }
   })();
-  // %% VR
-  // A headset session takes the camera over: it renders both eyes into the XR
-  // framebuffer, at its own cadence, with its own pose. The three places below
-  // that assume a desktop camera — the post-processing chain, the on-demand
-  // render gate and the canvas resize — all stand down while one runs.
+  // %% being in the scene rather than looking at it
+  // Two ways in — a headset, or walking with a keyboard or a thumb — sharing one
+  // body (the rig the camera rides in) and one presence (the avatar published into
+  // a live demo). Either way the camera stops being the orbiting camera, so the
+  // four places below that assume one — the orbit controls, the post-processing
+  // chain, the on-demand render gate and the canvas resize — stand down.
+  const rig = ViewerRig.install({ scene: scene3, camera: camera, worldRoot: worldRoot });
+  const viewerNameEl = $('viewer-name');
+  const presence = ViewerPresence.install({
+    camera: camera,
+    worldRoot: worldRoot,
+    // where to publish this viewer, or null when no demo is running — an avatar is
+    // a marker in the live world, so there has to be a live world
+    live: function () { return liveOn ? liveUrl() : null; },
+    hands: function () { return vr.hands(); },
+    // the bridge names each viewer, since only it sees the whole room; showing that
+    // name back is how someone knows which figure in the scene is them
+    onIdentity: function (identity) {
+      if (!viewerNameEl) return;
+      viewerNameEl.textContent = 'you are ' + identity.name;
+      viewerNameEl.style.color = identity.color;
+      viewerNameEl.classList.remove('hidden');
+    },
+  });
+
   const vrStatsEl = $('vr-stats');
   const vr = VRMode.install({
     renderer: renderer,
     scene: scene3,
     camera: camera,
+    rig: rig,
     controls: controls,
     ground: ground,
-    worldRoot: worldRoot,
-    // where to publish the headset's avatar, or null when no demo is running —
-    // an avatar is a marker in the live world, so there has to be a live world
-    live: function () { return liveOn ? liveUrl() : null; },
     button: $('scene-vr'),
     onChange: function (presenting) {
       if (presenting) return;
+      presence.withdraw(false);
       if (reloadHeldForVr) { window.location.reload(); return; }
       resize();                    // the session left the canvas at headset size
       needsRender = true;
@@ -1991,6 +2023,29 @@ Panels.define('robot-scene', function (root, bus) {
         + stats.worstMs.toFixed(0) + ' ms worst · ' + stats.frames + ' frames';
       vrStatsEl.classList.remove('hidden');
     },
+  });
+
+  const fps = FpsMode.install({
+    renderer: renderer,
+    camera: camera,
+    rig: rig,
+    controls: controls,
+    container: $('viewer'),
+    button: $('scene-walk'),
+    hint: $('walk-hint'),
+    onChange: function (walking) {
+      if (!walking) presence.withdraw(false);
+      needsRender = true;
+    },
+  });
+
+  //: whether something other than the orbit controls is driving the camera
+  function inScene() {
+    return renderer.xr.isPresenting || fps.active();
+  }
+
+  window.addEventListener('pagehide', function () {
+    if (inScene()) presence.withdraw(true);
   });
 
   function renderFrame() {
@@ -2022,11 +2077,14 @@ Panels.define('robot-scene', function (root, bus) {
       });
       needsRender = true;
     }
-    // while a headset presents, the camera's pose is WebXR's to write — the orbit
-    // controls would be writing over it every frame
-    const presenting = renderer.xr.isPresenting;
-    const moved = presenting ? false : controls.update();
-    if (presenting) vr.update(delta);
+    // OrbitControls.update() writes camera.position whatever `enabled` says — that
+    // flag only gates its event handlers — so while a headset or a walking viewer
+    // owns the camera it has to be left uncalled, not merely disabled
+    const driven = inScene();
+    const moved = driven ? false : controls.update();
+    if (renderer.xr.isPresenting) vr.update(delta);
+    fps.update(delta);
+    if (driven) presence.publish();
     if (playing && traj && !liveOn) {
       playhead += ((traj.framesPerSecond || 30) / 60) * 1.6 * playbackSpeedMultiplier;
       if (playhead >= traj.frames.length - 1) { playhead = traj.frames.length - 1; playing = false; stepCb('__done__'); }
@@ -2035,8 +2093,10 @@ Panels.define('robot-scene', function (root, bus) {
       if (follow && robotCenter(_target)) controls.target.lerp(_target, 0.06);
       needsRender = true;
     }
-    // a headset needs every frame; the on-demand gate is a desktop economy
-    if (!presenting && !needsRender && !moved && !controls.autoRotate) return;
+    // a viewer inside the scene needs every frame — a headset to track the head, a
+    // walker because looking around is continuous; the on-demand gate is an economy
+    // only the orbiting view can afford
+    if (!driven && !needsRender && !moved && !controls.autoRotate) return;
     renderFrame();
     needsRender = false;
   }

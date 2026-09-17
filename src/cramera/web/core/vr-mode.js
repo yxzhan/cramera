@@ -1,24 +1,16 @@
 /* ============================================================================
  * core/vr-mode.js — viewing the 3D scene from inside it, through a WebXR headset.
  *
- * The desktop viewer looks at the scene through an orbiting camera; a headset
- * instead carries the camera itself, so the camera is parked inside a *rig* —
- * a Group standing on the scene's floor — and the headset's own pose rides on
- * top of it. Moving the viewer through the scene means moving that rig: the
- * camera's local pose belongs to WebXR and is overwritten every frame.
+ * The camera rides in the rig core/viewer-rig.js builds, and under a session its
+ * own local pose belongs to WebXR: moving a headset viewer through the scene means
+ * moving that rig. What this module adds on top is the session itself, the
+ * controllers, and the two moves a headset makes — teleport and snap turn, both
+ * deliberately discontinuous, since gliding a headset viewer through a room is the
+ * classic way to make them sick.
  *
- * The rig is a direct child of the three.js scene, not of the world root: it
- * lives in y-up headset space, while worldRoot carries the z-up->y-up rotation
- * the URDF world needs.
- *
- * Locomotion is teleport plus snap turn, both deliberately discontinuous —
- * gliding a headset viewer through a room is the classic way to make them sick,
- * and the desktop viewer's "follow the robot" camera glide is off in here for
- * the same reason.
- *
- * The page keeps its own DOM UI (layers, pickers, timeline); none of it is
- * visible through a headset, so a session is view-only by design. Everything is
- * set up on the desktop page first, then the headset is put on.
+ * The page keeps its own DOM UI (layers, pickers, timeline); none of it is visible
+ * through a headset, so a session is view-only by design. Everything is set up on
+ * the desktop page first, then the headset is put on.
  * ==========================================================================*/
 (function (global) {
   'use strict';
@@ -44,42 +36,6 @@
   //: url flag that drops shadows for the session — the first thing to try when a
   //: scene renders fine on the desktop but misses frame rate in stereo
   const NO_SHADOW_FLAG = /[?&]vr=noshadow(&|$)/;
-  //: where a session starts, as [x, y] on the world floor.
-  //:
-  //: These are the *world* frame's coordinates — the z-up frame the URDF world,
-  //: the published poses and the markers all use — not three's y-up space, so this
-  //: reads the same way as any other pose in the scene. worldRoot converts.
-  const ENTRY_XY = [0, 3];
-
-  //: how often at most the headset tells the live bridge it has moved, in ms
-  const POST_INTERVAL_MS = 100;
-  //: how far the head must move, in metres, before that is worth a post
-  const POST_MOVE = 0.02;
-  //: how far it must turn, in radians, before that is worth a post
-  const POST_TURN = 2 * Math.PI / 180;
-  //: how often a viewer who has not moved reports in anyway, in ms.
-  //:
-  //: The deadband above suppresses pose updates, not the viewer itself: the bridge
-  //: drops an avatar that has gone quiet (``avatar.SILENCE_TIMEOUT_SECONDS``), so
-  //: someone sitting still would otherwise be swept away as though they had left.
-  //: Well under that timeout, and rare enough to cost nothing.
-  const HEARTBEAT_MS = 1000;
-
-  const UP = new THREE.Vector3(0, 1, 0);
-  //: Turns a headset-space pose into a marker pose.
-  //:
-  //: A head and a controller both look down their own -Z, while the marker shapes a
-  //: viewer is drawn with are laid out along their pose's +X (see
-  //: ``cramera.live.avatar.PART_SHAPES``). One quarter turn about the vertical
-  //: reconciles them, and keeps the roll the headset reported, which aiming the
-  //: axis alone would lose.
-  const FORWARD_TO_X = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
-
-  //: An identifier for this page's viewer, stable for as long as the tab is open.
-  //:
-  //: The bridge keys one avatar per viewer off this, so two headsets on the same
-  //: demo each get their own arrow rather than fighting over one.
-  const VIEWER_ID = 'vr-' + Math.random().toString(36).slice(2, 10);
 
   //: Whether this browser can present to a headset at all.
   //:
@@ -133,50 +89,31 @@
 
   //: Install VR mode on a mounted 3D scene.
   //:
-  //: :param options: ``renderer``, ``scene``, ``camera``, ``controls`` (the
-  //:     OrbitControls to stand down while presenting), ``ground`` (the mesh a
-  //:     teleport ray lands on), ``worldRoot`` (the z-up world group, which turns
-  //:     :data:`ENTRY_XY` into a spot in the headset's y-up space), ``button``
-  //:     (the element that opens a session) and ``onChange`` (called with true on
-  //:     entering and false on leaving).
-  //: :return: The mode's handle — ``presenting()``, ``update()`` to be called
-  //:     once per frame while presenting, and ``stats()`` for the last session's
-  //:     frame timing.
+  //: :param options: ``renderer``, ``scene``, ``camera``, ``rig`` (the ViewerRig
+  //:     handle), ``controls`` (the OrbitControls to stand down while presenting),
+  //:     ``ground`` (the mesh a teleport ray lands on), ``button`` (the element
+  //:     that opens a session) and ``onChange`` (called with true on entering and
+  //:     false on leaving).
+  //: :return: The mode's handle — ``presenting()``, ``update()`` to be called once
+  //:     per frame while presenting, ``hands()`` for the parts a session reports,
+  //:     and ``stats()`` for the last session's frame timing.
   function install(options) {
     const renderer = options.renderer;
     const scene = options.scene;
     const camera = options.camera;
+    const rig = options.rig;
     const controls = options.controls;
     const ground = options.ground;
-    const worldRoot = options.worldRoot;
-    const live = options.live;
     const button = options.button;
     const onChange = options.onChange || function () {};
-
-    // the camera stops being a loose object and becomes the rig's passenger; while
-    // no session runs the rig sits at the origin, so the desktop camera is
-    // unaffected — its local pose is still its world pose
-    const rig = new THREE.Group();
-    rig.name = 'vr-rig';
-    rig.add(camera);
-    scene.add(rig);
 
     const raycaster = new THREE.Raycaster();
     const mark = reticle();
     scene.add(mark);
 
-    const head = new THREE.Vector3();
     const origin = new THREE.Vector3();
     const direction = new THREE.Vector3();
-    const offset = new THREE.Vector3();
-    const entry = new THREE.Vector3();
-    const centre = new THREE.Vector3();
     const facing = new THREE.Quaternion();
-    // the avatar's poses, built in the world's z-up frame
-    const worldFromScene = new THREE.Matrix4();
-    const sceneToWorld = new THREE.Quaternion();
-    const partPosition = new THREE.Vector3();
-    const partQuaternion = new THREE.Quaternion();
 
     let session = null;
     let landing = null;          // the world point the active aim would teleport to
@@ -184,8 +121,6 @@
     let turnArmed = true;        // false while the thumbstick is still pushed over
     let shadowsWere = null;      // renderer.shadowMap.enabled before the session
     let frames = 0, elapsed = 0, worst = 0, lastStats = null;
-    let postedAt = 0;            // when the avatar last went to the bridge
-    let postedParts = null;      // part name -> the pose last posted, for the deadband
     const grips = [];            // the controllers' grip spaces, by input-source index
 
     const controllers = [0, 1].map(function (index) {
@@ -193,60 +128,19 @@
       controller.add(aimRay());
       controller.addEventListener('selectstart', function () { aimingWith = controller; });
       controller.addEventListener('selectend', function () {
-        if (aimingWith === controller && landing) teleport(landing);
+        if (aimingWith === controller && landing) rig.moveTo(landing);
         aimingWith = null;
         landing = null;
         mark.visible = false;
       });
-      rig.add(controller);
+      rig.group.add(controller);
 
       const grip = renderer.xr.getControllerGrip(index);
       grip.add(handBlock());
-      rig.add(grip);
+      rig.group.add(grip);
       grips[index] = grip;
       return controller;
     });
-
-    //: Stand the rig on :data:`ENTRY_XY`, facing away from the world origin.
-    //:
-    //: A session always starts from the same spot rather than from wherever the
-    //: orbit camera happened to be: that camera can sit below the floor or 20 m
-    //: out, neither of which is somewhere to put a person.
-    function placeRig() {
-      if (worldRoot) worldRoot.updateWorldMatrix(true, false);
-      entry.set(ENTRY_XY[0], ENTRY_XY[1], 0);
-      centre.set(0, 0, 0);
-      if (worldRoot) {
-        entry.applyMatrix4(worldRoot.matrixWorld);
-        centre.applyMatrix4(worldRoot.matrixWorld);
-      }
-      rig.position.set(entry.x, 0, entry.z);
-      offset.subVectors(centre, entry);
-      offset.y = 0;
-      if (offset.lengthSq() < 1e-6) offset.set(0, 0, 1);
-      rig.rotation.set(0, Math.atan2(offset.x, offset.z), 0);
-    }
-
-    //: Move the rig so the viewer's *head* lands on ``point``.
-    //:
-    //: With a floor-relative reference space the head is wherever the user has
-    //: physically walked to inside their play space, which is not above the rig's
-    //: origin; teleporting the rig itself would land them that same offset away
-    //: from where they aimed.
-    function teleport(point) {
-      camera.getWorldPosition(head);
-      rig.position.x += point.x - head.x;
-      rig.position.z += point.z - head.z;
-      rig.position.y = 0;
-    }
-
-    //: Rotate the rig by ``angle`` about the vertical axis through the head, so a
-    //: turn pivots around the viewer instead of swinging them around the origin.
-    function snapTurn(angle) {
-      camera.getWorldPosition(head);
-      rig.position.sub(head).applyAxisAngle(UP, angle).add(head);
-      rig.rotation.y += angle;
-    }
 
     //: Follow the aiming controller's ray to the floor and move the reticle there.
     function aim() {
@@ -285,127 +179,36 @@
         if (typeof x === 'number' && Math.abs(x) > Math.abs(push)) push = x;
       }
       if (turnArmed && Math.abs(push) > SNAP_DEADZONE) {
-        snapTurn(push > 0 ? -SNAP_TURN : SNAP_TURN);
+        rig.turn(push > 0 ? -SNAP_TURN : SNAP_TURN);
         turnArmed = false;
       } else if (!turnArmed && Math.abs(push) < SNAP_RELEASE) {
         turnArmed = true;
       }
     }
 
-    //: Send one body to the live bridge's avatar route, ignoring the outcome.
+    //: The parts a session is tracking beyond the head, for the avatar.
     //:
-    //: A demo can end at any moment and the bridge goes with it; a headset losing
-    //: its avatar is not a reason to interrupt the person wearing it.
-    //:
-    //: :param base: The bridge's base url.
-    //: :param body: The JSON body to post.
-    //: :param leaving: Whether the page may be going away as this is sent.
-    function post(base, body, leaving) {
-      try {
-        global.fetch(base + '/avatar', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-          keepalive: !!leaving,
-        }).catch(function () {});
-      } catch (e) { /* the bridge is optional */ }
-    }
-
-    //: Publish where this headset is, as a marker in the running demo's world.
-    //:
-    //: Only while a demo is live: ``live()`` hands back the bridge's url or null,
-    //: and without a bridge there is nothing to join.
-    //:
-    //: The rate limit and deadband are not politeness. A changed marker set makes
-    //: every viewer refetch /markers and rebuild the whole overlay from scratch, so
-    //: a head reported raw would have every desktop page tearing down and rebuilding
-    //: every collision and costmap marker in the scene at the poll rate.
-    function publishAvatar() {
-      const base = live && live();
-      if (!base) { postedParts = null; return; }
-      const now = (global.performance && global.performance.now()) || Date.now();
-      const since = now - postedAt;
-      if (since < POST_INTERVAL_MS) return;
-
-      // three's y-up world back into the z-up frame every published pose uses
-      if (worldRoot) {
-        worldRoot.updateWorldMatrix(true, false);
-        worldFromScene.copy(worldRoot.matrixWorld).invert();
-        worldRoot.getWorldQuaternion(sceneToWorld).invert();
-      } else {
-        worldFromScene.identity();
-        sceneToWorld.identity();
-      }
-
-      const parts = [{ name: 'head', object: camera }];
-      // handedness comes off the input source, not the slot: which controller is
-      // index 0 is the headset's business and can differ between runs
+    //: An untracked grip has no pose to report — a controller put down or asleep.
+    //: Handedness comes off the input source, not the slot: which controller is
+    //: index 0 is the headset's business and can differ between runs.
+    function hands() {
+      const parts = [];
       const sources = (session && session.inputSources) || [];
       for (let i = 0; i < sources.length; i++) {
         const hand = sources[i] && sources[i].handedness;
         const grip = grips[i];
-        // an untracked grip has no pose to report — a controller put down or asleep
         if (!grip || !grip.visible) continue;
         if (hand === 'left' || hand === 'right') parts.push({ name: hand, object: grip });
       }
-
-      const measured = [];
-      let changed = !postedParts || postedParts.length !== parts.length;
-      for (let i = 0; i < parts.length; i++) {
-        const object = parts[i].object;
-        object.getWorldPosition(partPosition).applyMatrix4(worldFromScene);
-        partQuaternion.copy(sceneToWorld)
-          .multiply(object.getWorldQuaternion(facing))
-          .multiply(FORWARD_TO_X);
-        const pose = {
-          name: parts[i].name,
-          position: partPosition.clone(),
-          quaternion: partQuaternion.clone(),
-        };
-        measured.push(pose);
-        if (changed) continue;
-        const was = postedParts[i];
-        if (was.name !== pose.name
-          || was.position.distanceTo(pose.position) >= POST_MOVE
-          || was.quaternion.angleTo(pose.quaternion) >= POST_TURN) changed = true;
-      }
-      // holding still is not leaving: report in anyway, or the bridge sweeps this
-      // viewer as gone the moment somebody else's post runs the sweep
-      if (!changed && since < HEARTBEAT_MS) return;
-
-      postedAt = now;
-      postedParts = measured;
-      post(base, {
-        viewer: VIEWER_ID,
-        parts: measured.map(function (pose) {
-          return {
-            name: pose.name,
-            position: [pose.position.x, pose.position.y, pose.position.z],
-            quaternion: [
-              pose.quaternion.x, pose.quaternion.y, pose.quaternion.z, pose.quaternion.w,
-            ],
-          };
-        }),
-      }, false);
+      return parts;
     }
 
-    //: Take this headset's avatar back out of the scene.
-    //:
-    //: :param leaving: Whether the page itself is going away.
-    function withdrawAvatar(leaving) {
-      const base = live && live();
-      postedParts = null;
-      if (base) post(base, { viewer: VIEWER_ID, gone: true }, leaving);
-    }
-
-    //: One frame of VR mode: aim, turn, publish the avatar, and keep the frame-time
-    //: tally.
+    //: One frame of VR mode: aim, turn, and keep the frame-time tally.
     //:
     //: :param delta: Seconds since the previous frame.
     function update(delta) {
       aim();
       readTurn();
-      publishAvatar();
       if (delta > 0 && delta < 1) {
         frames++;
         elapsed += delta;
@@ -417,7 +220,10 @@
       session = renderer.xr.getSession();
       frames = 0; elapsed = 0; worst = 0;
       controls.enabled = false;
-      placeRig();
+      // a headset reports its own head height, so the camera sits at the rig's own
+      // origin and its local pose is WebXR's from here on; only the rig is ours
+      rig.adopt(0);
+      rig.place();
       if (NO_SHADOW_FLAG.test(global.location.search)) {
         shadowsWere = renderer.shadowMap.enabled;
         renderer.shadowMap.enabled = false;
@@ -434,13 +240,11 @@
       lastStats = frames > 1
         ? { fps: frames / elapsed, worstMs: worst * 1000, frames: frames }
         : null;
-      withdrawAvatar(false);
       session = null;
       aimingWith = null;
       landing = null;
       mark.visible = false;
-      rig.position.set(0, 0, 0);
-      rig.rotation.set(0, 0, 0);
+      rig.release();
       if (shadowsWere !== null) {
         renderer.shadowMap.enabled = shadowsWere;
         scene.traverse(function (object) {
@@ -455,11 +259,6 @@
 
     renderer.xr.addEventListener('sessionstart', onSessionStart);
     renderer.xr.addEventListener('sessionend', onSessionEnd);
-    // a headset whose tab is closed mid-session never reaches sessionend; the
-    // bridge sweeps an avatar that goes quiet, but saying so is quicker
-    global.addEventListener('pagehide', function () {
-      if (session) withdrawAvatar(true);
-    });
 
     function enter() {
       if (session) { session.end(); return; }
@@ -489,8 +288,8 @@
     return {
       presenting: function () { return !!session; },
       update: update,
+      hands: hands,
       stats: function () { return lastStats; },
-      rig: rig,
     };
   }
 

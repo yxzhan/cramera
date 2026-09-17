@@ -63,14 +63,30 @@ body{
 }
 .pop-out:hover,.pop-out:focus-visible{color:var(--accent);border-color:var(--accent);outline:none}
 
-/* headset entry — sits beside the pop-out button, hidden unless WebXR answers */
-.enter-vr{
-  position:absolute;right:92px;bottom:12px;z-index:5;
+/* ways into the scene — stacked above the pop-out button so neither has to know
+   how wide the other is; the VR one hides itself when WebXR does not answer */
+.stage-actions{position:absolute;right:12px;bottom:44px;z-index:5;display:flex;gap:8px}
+.stage-action{
   background:rgba(12,14,19,.72);border:1px solid var(--line);color:var(--muted);
   border-radius:6px;padding:4px 9px;font-size:12px;cursor:pointer;white-space:nowrap;
 }
-.enter-vr:hover,.enter-vr:focus-visible{color:var(--accent);border-color:var(--accent);outline:none}
-.vr-stats{position:absolute;right:12px;bottom:40px;z-index:5;font-size:11px;color:var(--faint);letter-spacing:.3px}
+.stage-action:hover,.stage-action:focus-visible{color:var(--accent);border-color:var(--accent);outline:none}
+.vr-stats{position:absolute;right:12px;bottom:76px;z-index:5;font-size:11px;color:var(--faint);letter-spacing:.3px}
+.walk-hint{position:absolute;left:50%;bottom:12px;transform:translateX(-50%);z-index:5;
+  font-size:11px;color:var(--faint);letter-spacing:.4px;pointer-events:none;white-space:nowrap}
+/* the name the bridge admitted this viewer under, in the colour they are drawn in */
+.viewer-name{position:absolute;left:50%;bottom:28px;transform:translateX(-50%);z-index:5;
+  font-size:12px;letter-spacing:.4px;pointer-events:none;white-space:nowrap}
+
+/* the on-screen stick, placed where a thumb lands */
+.fps-stick{position:absolute;z-index:6;width:0;height:0;pointer-events:none}
+.fps-stick:before{content:"";position:absolute;left:50%;top:50%;width:132px;height:132px;
+  margin:-66px 0 0 -66px;border-radius:50%;border:1px solid rgba(255,255,255,.22);
+  background:rgba(12,14,19,.28)}
+.fps-stick-knob{position:absolute;left:50%;top:50%;width:52px;height:52px;margin:-26px 0 0 -26px;
+  border-radius:50%;background:rgba(74,194,255,.45);border:1px solid rgba(74,194,255,.8)}
+/* a walking viewer's drags steer the view, never the page */
+.walking #viewer canvas{touch-action:none;cursor:crosshair}
 
 /* %% 3d stage */
 .stage{position:relative;flex:1;min-height:0;overflow:hidden;background:
