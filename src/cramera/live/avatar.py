@@ -64,9 +64,20 @@ arrow needs no reorienting to swap into :data:`PART_SHAPES` in place of a block.
 Its scale reads as length, shaft diameter and head diameter instead of extents.
 """
 
-AVATAR_COLOR = (0.29, 0.76, 1.0)
+VIEWER_COLORS = (
+    "#4ac2ff",
+    "#ffb648",
+    "#7fe08a",
+    "#ff7fb0",
+    "#c98bdb",
+    "#6bd0c0",
+)
 """
-The colour a viewer is drawn in, matching the teleport reticle they aim with.
+The colours viewers are drawn in, one each, so two people in the same room are told
+apart at a glance.
+
+They are brighter than the loose objects' cycle in :mod:`cramera.palette`: a viewer
+is someone to find in the scene, not part of the furniture.
 """
 
 AVATAR_OPACITY = 0.95
@@ -76,6 +87,9 @@ AVATAR_OPACITY = 0.95
 class PartShape:
     """
     How one tracked part of a viewer is drawn.
+
+    Only the shape — the colour belongs to the viewer, not the part, so all of one
+    person's parts read as one person.
     """
 
     kind: int
@@ -88,11 +102,6 @@ class PartShape:
     """
     The marker's scale in metres, with the meaning its type gives it: an arrow's is
     length, shaft diameter and head diameter; a cube's is its extents.
-    """
-
-    color: Tuple[float, float, float] = AVATAR_COLOR
-    """
-    The part's colour as red, green and blue in [0, 1].
     """
 
 
@@ -157,9 +166,20 @@ def _numbers(value: Any, count: int) -> Optional[List[float]]:
     return numbers
 
 
+def _channels(hex_color: str) -> Tuple[float, float, float]:
+    """
+    A ``#rrggbb`` colour as red, green and blue in [0, 1].
+
+    :param hex_color: The colour to read.
+    """
+    value = hex_color.lstrip("#")
+    return tuple(int(value[i : i + 2], 16) / 255.0 for i in (0, 2, 4))
+
+
 def _message(
     identifier: int,
     shape: Optional[PartShape],
+    hex_color: str,
     position: List[float],
     quaternion: List[float],
     action: int,
@@ -170,12 +190,14 @@ def _message(
     :param identifier: The marker's id within :data:`AVATAR_NAMESPACE`.
     :param shape: How the part is drawn, or None for a delete, which reads no
         further than the action, namespace and id.
+    :param hex_color: The viewer's colour as ``#rrggbb``.
     :param position: The part's position in the world frame.
     :param quaternion: The part's orientation as ``[x, y, z, w]``.
     :param action: :data:`~cramera.live.markers.ADD_ACTION` or
         :data:`~cramera.live.markers.DELETE_ACTION`.
     """
     drawn = shape or PART_SHAPES["head"]
+    red, green, blue = _channels(hex_color)
     return SimpleNamespace(
         ns=AVATAR_NAMESPACE,
         id=identifier,
@@ -190,9 +212,7 @@ def _message(
             ),
         ),
         scale=SimpleNamespace(x=drawn.scale[0], y=drawn.scale[1], z=drawn.scale[2]),
-        color=SimpleNamespace(
-            r=drawn.color[0], g=drawn.color[1], b=drawn.color[2], a=AVATAR_OPACITY
-        ),
+        color=SimpleNamespace(r=red, g=green, b=blue, a=AVATAR_OPACITY),
         points=[],
         text="",
     )
@@ -204,7 +224,36 @@ def _delete(identifier: int) -> SimpleNamespace:
 
     :param identifier: The marker's id.
     """
-    return _message(identifier, None, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], DELETE_ACTION)
+    return _message(
+        identifier, None, VIEWER_COLORS[0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0], DELETE_ACTION
+    )
+
+
+@dataclass(frozen=True)
+class PartPose:
+    """
+    One validated part of a post, ready to be drawn.
+    """
+
+    identifier: int
+    """
+    The marker id this part is drawn under.
+    """
+
+    shape: PartShape
+    """
+    How the part is drawn.
+    """
+
+    position: List[float]
+    """
+    The part's position in the world frame.
+    """
+
+    quaternion: List[float]
+    """
+    The part's orientation as ``[x, y, z, w]``.
+    """
 
 
 @dataclass
@@ -230,25 +279,57 @@ class AvatarRoster:
     Viewer identifier to the marker ids currently drawn for it.
     """
 
-    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    slots: Dict[str, int] = field(default_factory=dict)
     """
-    Guards both maps — posts arrive on the bridge's HTTP threads.
+    Viewer identifier to its position in :data:`VIEWER_COLORS`.
+
+    A position is held for as long as the viewer is, and freed when they leave, so
+    the colours stay distinct rather than drifting apart as people come and go.
     """
 
-    def touch(self, viewer: str, now: float, identifiers: List[int]) -> List[int]:
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    """
+    Guards the maps — posts arrive on the bridge's HTTP threads.
+    """
+
+    def touch(self, viewer: str, now: float, identifiers: List[int]) -> Tuple[str, List[int]]:
         """
         Record a viewer's post, and report the markers it has stopped publishing.
 
         :param viewer: The viewer's identifier.
         :param now: The current monotonic time.
         :param identifiers: The marker ids this post carries.
-        :return: The ids this viewer showed before but no longer does.
+        :return: The viewer's colour, and the ids it showed before but no longer does.
         """
         with self._lock:
             dropped = [i for i in self.shown.get(viewer, []) if i not in identifiers]
             self.last_seen[viewer] = now
             self.shown[viewer] = list(identifiers)
-        return dropped
+            if viewer not in self.slots:
+                self.slots[viewer] = self._free_slot()
+            slot = self.slots[viewer]
+        return VIEWER_COLORS[slot % len(VIEWER_COLORS)], dropped
+
+    def color_of(self, viewer: str) -> str:
+        """
+        The colour a viewer is being drawn in.
+
+        :param viewer: The viewer's identifier.
+        """
+        with self._lock:
+            return VIEWER_COLORS[self.slots.get(viewer, 0) % len(VIEWER_COLORS)]
+
+    def _free_slot(self) -> int:
+        """
+        The lowest colour position no current viewer holds.
+
+        Only ever called while :attr:`_lock` is held.
+        """
+        taken = set(self.slots.values())
+        slot = 0
+        while slot in taken:
+            slot += 1
+        return slot
 
     def drop(self, viewer: str) -> List[int]:
         """
@@ -259,6 +340,7 @@ class AvatarRoster:
         """
         with self._lock:
             self.last_seen.pop(viewer, None)
+            self.slots.pop(viewer, None)
             return self.shown.pop(viewer, [])
 
     def expired(self, now: float) -> List[int]:
@@ -277,6 +359,7 @@ class AvatarRoster:
             identifiers: List[int] = []
             for viewer in stale:
                 self.last_seen.pop(viewer, None)
+                self.slots.pop(viewer, None)
                 identifiers.extend(self.shown.pop(viewer, []))
         return identifiers
 
@@ -316,6 +399,7 @@ def observe_avatar(bridge: Bridge, payload: Any) -> Tuple[Dict[str, Any], int]:
         return {"ok": False, "error": "no viewer id"}, 400
     now = time.monotonic()
     messages: List[SimpleNamespace] = []
+    color = ROSTER.color_of(viewer)
 
     if payload.get("gone"):
         messages.extend(_delete(identifier) for identifier in ROSTER.drop(viewer))
@@ -323,7 +407,7 @@ def observe_avatar(bridge: Bridge, payload: Any) -> Tuple[Dict[str, Any], int]:
         parts = payload.get("parts")
         if not isinstance(parts, list) or not parts:
             return {"ok": False, "error": "parts must be a non-empty list"}, 400
-        identifiers: List[int] = []
+        poses: List[PartPose] = []
         for part in parts:
             if not isinstance(part, dict):
                 return {"ok": False, "error": "each part is an object"}, 400
@@ -343,22 +427,29 @@ def observe_avatar(bridge: Bridge, payload: Any) -> Tuple[Dict[str, Any], int]:
                     "error": "%s needs a position of 3 numbers and a quaternion of 4"
                     % name,
                 }, 400
-            identifier = marker_id(viewer, name)
-            identifiers.append(identifier)
-            messages.append(_message(identifier, shape, position, quaternion, ADD_ACTION))
+            poses.append(PartPose(marker_id(viewer, name), shape, position, quaternion))
+        # the roster is only told once every part has been read, so a post that turns
+        # out to be malformed leaves the viewer as it was rather than half-moved
+        color, dropped = ROSTER.touch(viewer, now, [pose.identifier for pose in poses])
+        messages.extend(
+            _message(pose.identifier, pose.shape, color, pose.position, pose.quaternion, ADD_ACTION)
+            for pose in poses
+        )
         # a part this viewer has stopped tracking stops being drawn
-        messages.extend(_delete(identifier) for identifier in ROSTER.touch(viewer, now, identifiers))
+        messages.extend(_delete(identifier) for identifier in dropped)
 
     messages.extend(_delete(identifier) for identifier in ROSTER.expired(now))
     bridge.observe_ros_markers(AVATAR_TOPIC, messages)
-    return {"ok": True, "viewers": ROSTER.count()}, 200
+    return {"ok": True, "viewers": ROSTER.count(), "color": color}, 200
 
 
 __all__ = [
     "AVATAR_TOPIC",
     "AVATAR_NAMESPACE",
     "PART_SHAPES",
+    "VIEWER_COLORS",
     "PartShape",
+    "PartPose",
     "SILENCE_TIMEOUT_SECONDS",
     "AvatarRoster",
     "ROSTER",

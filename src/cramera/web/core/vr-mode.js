@@ -51,12 +51,19 @@
   //: reads the same way as any other pose in the scene. worldRoot converts.
   const ENTRY_XY = [0, 3];
 
-  //: how often at most the headset tells the live bridge where it is, in ms
+  //: how often at most the headset tells the live bridge it has moved, in ms
   const POST_INTERVAL_MS = 100;
   //: how far the head must move, in metres, before that is worth a post
   const POST_MOVE = 0.02;
   //: how far it must turn, in radians, before that is worth a post
   const POST_TURN = 2 * Math.PI / 180;
+  //: how often a viewer who has not moved reports in anyway, in ms.
+  //:
+  //: The deadband above suppresses pose updates, not the viewer itself: the bridge
+  //: drops an avatar that has gone quiet (``avatar.SILENCE_TIMEOUT_SECONDS``), so
+  //: someone sitting still would otherwise be swept away as though they had left.
+  //: Well under that timeout, and rare enough to cost nothing.
+  const HEARTBEAT_MS = 1000;
 
   const UP = new THREE.Vector3(0, 1, 0);
   //: Turns a headset-space pose into a marker pose.
@@ -317,7 +324,8 @@
       const base = live && live();
       if (!base) { postedParts = null; return; }
       const now = (global.performance && global.performance.now()) || Date.now();
-      if (now - postedAt < POST_INTERVAL_MS) return;
+      const since = now - postedAt;
+      if (since < POST_INTERVAL_MS) return;
 
       // three's y-up world back into the z-up frame every published pose uses
       if (worldRoot) {
@@ -361,7 +369,9 @@
           || was.position.distanceTo(pose.position) >= POST_MOVE
           || was.quaternion.angleTo(pose.quaternion) >= POST_TURN) changed = true;
       }
-      if (!changed) return;
+      // holding still is not leaving: report in anyway, or the bridge sweeps this
+      // viewer as gone the moment somebody else's post runs the sweep
+      if (!changed && since < HEARTBEAT_MS) return;
 
       postedAt = now;
       postedParts = measured;

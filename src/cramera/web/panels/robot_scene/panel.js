@@ -1544,6 +1544,17 @@ Panels.define('robot-scene', function (root, bus) {
   // neither the models' prefixes nor the robot (see LiveMode.needsLiveSceneReload):
   // rebundle the live scene, then reload onto it
   let liveReloadRequested = false;
+  let reloadHeldForVr = false;
+  // Reloading the page ends any WebXR session running on it. The live bundle is
+  // shared by every client, so one page rebuilding it reloads all of them — which
+  // would eject whoever is wearing a headset, on someone else's account. Their
+  // reload waits until they take it off; live poses and markers keep streaming in
+  // the meantime, so what they are looking at stays current even if the bundle
+  // behind it is not.
+  function reloadForLiveBundle() {
+    if (renderer.xr.isPresenting) { reloadHeldForVr = true; return; }
+    window.location.reload();
+  }
   // attaching means "show the running demo": the toggle path never touches
   // /live_scene, so a page already sitting on the live scene would otherwise keep a
   // bundle from a previous run (or one built before the world attached) forever.
@@ -1559,7 +1570,7 @@ Panels.define('robot-scene', function (root, bus) {
           .then(function (fresh) {
             if (!LiveMode.sameBundle(SCENE, fresh)) {
               liveReloadRequested = true;
-              window.location.reload();
+              reloadForLiveBundle();
             }
           });
       })
@@ -1570,7 +1581,7 @@ Panels.define('robot-scene', function (root, bus) {
         || !LiveMode.needsLiveSceneReload(SceneContext.name(), liveOn, SCENE, info)) return;
     liveReloadRequested = true;
     fetch(liveUrl() + '/live_scene').then(function (r) {
-      if (r.ok) window.location.reload();
+      if (r.ok) reloadForLiveBundle();
       else liveReloadRequested = false;        // bundling failed — try again next probe
     }).catch(function () { liveReloadRequested = false; });
   }
@@ -1971,6 +1982,7 @@ Panels.define('robot-scene', function (root, bus) {
     button: $('scene-vr'),
     onChange: function (presenting) {
       if (presenting) return;
+      if (reloadHeldForVr) { window.location.reload(); return; }
       resize();                    // the session left the canvas at headset size
       needsRender = true;
       const stats = vr.stats();
