@@ -120,7 +120,7 @@ Panels.define('robot-scene', function (root, bus) {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.outputEncoding = THREE.sRGBEncoding;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 0.95;
+  renderer.toneMappingExposure = Exposure.of(window.location.search);
   container.appendChild(renderer.domElement);
 
   // soft vertical-gradient studio backdrop
@@ -1962,7 +1962,8 @@ Panels.define('robot-scene', function (root, bus) {
   // %% SSAO
   let composer = null, ssaoPass = null;
   (function setupSSAO() {
-    if (!(THREE.EffectComposer && THREE.RenderPass && window.BackgroundIgnoringSSAOPass && THREE.ShaderPass && THREE.CopyShader)) return;
+    if (!(THREE.EffectComposer && THREE.RenderPass && window.BackgroundIgnoringSSAOPass
+      && THREE.ShaderPass && THREE.GammaCorrectionShader)) return;
     try {
       const w = container.clientWidth || 800, h = container.clientHeight || 600;
       composer = new THREE.EffectComposer(renderer);
@@ -1972,9 +1973,14 @@ Panels.define('robot-scene', function (root, bus) {
       ssaoPass.minDistance = 0.001;
       ssaoPass.maxDistance = 0.04;
       composer.addPass(ssaoPass);
-      const copy = new THREE.ShaderPass(THREE.CopyShader);
-      copy.renderToScreen = true;
-      composer.addPass(copy);
+      // The renderer only applies outputEncoding when it draws straight to the
+      // canvas; a composer's passes draw into a linear render target, so the chain
+      // has to convert on its way out or the scene reaches the screen in linear
+      // space and reads far too dark. This is the conversion — which is also why
+      // the scene looks right in VR, where there is no composer at all.
+      const toScreen = new THREE.ShaderPass(THREE.GammaCorrectionShader);
+      toScreen.renderToScreen = true;
+      composer.addPass(toScreen);
     } catch (e) { composer = null; }
   })();
   // %% being in the scene rather than looking at it
