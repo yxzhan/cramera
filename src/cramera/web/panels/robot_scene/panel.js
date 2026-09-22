@@ -57,12 +57,35 @@ Panels.define('robot-scene', function (root, bus) {
     '  <div class="stage-hint">drag orbit · scroll zoom · right-drag pan · drag objects &amp; the blue place target</div>' +
     '  <button id="scene-pop-out" class="pop-out" title="Open the scene alone in a window of its own — drag it onto another screen and press F11 for full screen">⧉ Pop out</button>' +
     '  <div class="stage-actions">' +
+    '    <button id="scene-share" class="stage-action" title="Invite others into this session — a link for phones and laptops, a pairing code for headsets">🔗 Share</button>' +
     '    <button id="scene-walk" class="stage-action">🚶 Walk in</button>' +
     '    <button id="scene-vr" class="stage-action" style="display:none">🥽 Enter VR</button>' +
     '  </div>' +
     '  <div id="walk-hint" class="walk-hint"></div>' +
     '  <div id="viewer-name" class="viewer-name hidden"></div>' +
     '  <div id="vr-stats" class="vr-stats hidden"></div>' +
+    '  <div id="share-dialog" class="share-dialog hidden" role="dialog" aria-label="Invite others into this session">' +
+    '    <button id="share-close" class="share-close" title="Close">✕</button>' +
+    '    <div class="share-title">Invite others into this session</div>' +
+    '    <div class="share-columns">' +
+    '      <div class="share-column">' +
+    '        <div class="share-head">📱 Phone or laptop</div>' +
+    '        <div class="share-step">Scan the code, or send the link</div>' +
+    '        <div id="share-qr" class="share-qr"></div>' +
+    '        <div class="share-link-row"><input id="share-link" class="share-link" readonly><button id="share-copy" class="stage-action">Copy</button></div>' +
+    '      </div>' +
+    '      <div class="share-column">' +
+    '        <div class="share-head">🥽 Headset</div>' +
+    '        <div class="share-step">In the headset\'s browser open</div>' +
+    '        <div id="share-address" class="share-address"></div>' +
+    '        <div class="share-step">and enter</div>' +
+    '        <div id="share-code" class="share-code">····</div>' +
+    '        <div id="share-code-status" class="share-code-status"></div>' +
+    '        <button id="share-new-code" class="stage-action hidden">↻ New code</button>' +
+    '      </div>' +
+    '    </div>' +
+    '    <div id="share-warning" class="share-warning hidden">This page was opened without an access token, so whoever follows the link will be asked to sign in.</div>' +
+    '  </div>' +
     '</div>' +
     '<div class="workflow">' +
     '  <div class="workflow-head"><span class="wf-btns">' +
@@ -2097,6 +2120,89 @@ Panels.define('robot-scene', function (root, bus) {
       needsRender = true;
     },
   });
+
+  // %% inviting others: a QR code and link for phones, a pairing code for headsets
+  (function () {
+    const dialog = $('share-dialog');
+    const codeEl = $('share-code'), statusEl = $('share-code-status'), newCodeEl = $('share-new-code');
+    const linkEl = $('share-link');
+    const service = ShareLink.pairingService(window.location.search);
+    let storage = null;
+    try { storage = window.sessionStorage; } catch (e) { /* blocked storage */ }
+    const token = ShareLink.sessionToken(window.location.search, storage);
+    let countdown = null, pending = 0;
+    $('share-address').textContent = ShareLink.typedAddress(service);
+    $('share-warning').classList.toggle('hidden', !!token);
+
+    function stopCountdown() { if (countdown) { clearInterval(countdown); countdown = null; } }
+
+    //: Ask for a pairing code, and show it counting down to its expiry.
+    function pair(target) {
+      const request = ++pending;          // a code for a stale request is dropped
+      stopCountdown();
+      codeEl.textContent = '····';
+      codeEl.classList.remove('expired');
+      statusEl.textContent = 'asking ' + ShareLink.typedAddress(service) + ' for a code…';
+      newCodeEl.classList.add('hidden');
+      ShareLink.requestCode(service, target).then(function (pairing) {
+        if (request !== pending) return;
+        codeEl.textContent = pairing.code;
+        newCodeEl.classList.remove('hidden');
+        if (!pairing.expiresAt) { statusEl.textContent = ''; return; }
+        function tickDown() {
+          const left = Math.round((pairing.expiresAt - Date.now()) / 1000);
+          if (left > 0) {
+            statusEl.textContent = 'valid for ' + Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0');
+            return;
+          }
+          stopCountdown();
+          codeEl.classList.add('expired');
+          statusEl.textContent = 'this code has expired';
+        }
+        tickDown();
+        countdown = setInterval(tickDown, 1000);
+      }).catch(function (error) {
+        if (request !== pending) return;
+        codeEl.textContent = '––––';
+        statusEl.textContent = 'no pairing code: ' + (error && error.message ? error.message : error);
+        newCodeEl.classList.remove('hidden');
+      });
+    }
+
+    function open() {
+      // the link is taken at the moment of sharing, so it lands on the scene shown now
+      const target = ShareLink.link(window.location.href, token);
+      linkEl.value = target;
+      const qr = qrcode(0, 'M');
+      qr.addData(target);
+      qr.make();
+      $('share-qr').innerHTML = qr.createSvgTag({ cellSize: 4, margin: 3, scalable: true });
+      dialog.classList.remove('hidden');
+      pair(target);
+    }
+    function close() {
+      dialog.classList.add('hidden');
+      pending++;
+      stopCountdown();
+    }
+
+    $('scene-share').addEventListener('click', function () {
+      if (dialog.classList.contains('hidden')) open(); else close();
+    });
+    $('share-close').addEventListener('click', close);
+    newCodeEl.addEventListener('click', function () { pair(linkEl.value); });
+    $('share-copy').addEventListener('click', function () {
+      linkEl.select();
+      const copied = navigator.clipboard ? navigator.clipboard.writeText(linkEl.value)
+        : Promise.resolve(document.execCommand('copy'));
+      copied.then(function () { $('share-copy').textContent = 'Copied'; })
+        .catch(function () { $('share-copy').textContent = 'Press Ctrl+C'; });
+      setTimeout(function () { $('share-copy').textContent = 'Copy'; }, 1800);
+    });
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape' && !dialog.classList.contains('hidden')) close();
+    });
+  })();
 
   //: whether something other than the orbit controls is driving the camera
   function inScene() {
