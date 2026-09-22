@@ -123,15 +123,38 @@ Panels.define('robot-scene', function (root, bus) {
   renderer.toneMappingExposure = Exposure.of(window.location.search);
   container.appendChild(renderer.domElement);
 
-  // soft vertical-gradient studio backdrop
+  // %% skybox: an equirectangular sky painted on a canvas — a panorama rather than a
+  // flat backdrop, so it surrounds a headset viewer the same way it frames the desktop
   (function () {
+    const w = 2048, h = 1024;
     const cv = document.createElement('canvas');
-    cv.width = 2; cv.height = 256;
+    cv.width = w; cv.height = h;
     const ctx = cv.getContext('2d');
-    const g = ctx.createLinearGradient(0, 0, 0, 256);
-    g.addColorStop(0, '#232833'); g.addColorStop(0.55, '#151922'); g.addColorStop(1, '#0c0e13');
-    ctx.fillStyle = g; ctx.fillRect(0, 0, 2, 256);
-    scene3.background = new THREE.CanvasTexture(cv);
+    const g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#1f4f8c');       // zenith
+    g.addColorStop(0.32, '#4f86c2');
+    g.addColorStop(0.47, '#a9c8e4');
+    g.addColorStop(0.5, '#d9e3ea');     // horizon haze
+    g.addColorStop(0.53, '#9aa1a8');
+    g.addColorStop(1, '#3a3e44');       // below the floor's edge
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+    // soft clouds between the zenith and the horizon, each drawn a panorama-width
+    // either side too so the seam where the panorama wraps around stays invisible
+    ctx.filter = 'blur(18px)';
+    for (let i = 0; i < 34; i++) {
+      const x = Math.random() * w;
+      const y = h * (0.18 + Math.random() * 0.26);
+      const rx = 60 + Math.random() * 180, ry = rx * (0.18 + Math.random() * 0.12);
+      ctx.fillStyle = 'rgba(255,255,255,' + (0.18 + Math.random() * 0.3).toFixed(2) + ')';
+      [-w, 0, w].forEach(function (shift) {
+        ctx.beginPath(); ctx.ellipse(x + shift, y, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
+      });
+    }
+    ctx.filter = 'none';
+    const sky = new THREE.CanvasTexture(cv);
+    sky.mapping = THREE.EquirectangularReflectionMapping;
+    sky.encoding = THREE.sRGBEncoding;
+    scene3.background = sky;
   })();
 
   // image-based lighting (imported .dae lights are stripped on load)
@@ -209,6 +232,34 @@ Panels.define('robot-scene', function (root, bus) {
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
   scene3.add(ground);
+
+  // %% floor grid: a line every GRID_CELL metres, on the world frame's own round
+  // numbers rather than the floor's edges, so a cell reads as a metre of the map.
+  // A child of the ground, so it follows it when resized and when hidden.
+  //: the grid's spacing, in metres
+  const GRID_CELL = 1;
+  const floorGrid = new THREE.LineSegments(
+    new THREE.BufferGeometry(),
+    new THREE.LineBasicMaterial({ color: 0x3b2a1c, transparent: true, opacity: 0.35, depthWrite: false })
+  );
+  ground.add(floorGrid);
+  //: Redraw the grid over a ground plane of ``w`` x ``d`` whose centre is at
+  //: ``(cx, cz)`` in three's space. The ground lies in its own local XY plane, which
+  //: its rotation maps to three's XZ with local y running along -Z.
+  function layFloorGrid(w, d, cx, cz) {
+    const points = [];
+    // three's x is the world's x, three's z the world's -y: round in both is round
+    for (let x = Math.ceil((cx - w / 2) / GRID_CELL) * GRID_CELL; x <= cx + w / 2; x += GRID_CELL) {
+      points.push(new THREE.Vector3(x - cx, -d / 2, 0), new THREE.Vector3(x - cx, d / 2, 0));
+    }
+    for (let z = Math.ceil((cz - d / 2) / GRID_CELL) * GRID_CELL; z <= cz + d / 2; z += GRID_CELL) {
+      points.push(new THREE.Vector3(-w / 2, cz - z, 0), new THREE.Vector3(w / 2, cz - z, 0));
+    }
+    floorGrid.geometry.dispose();
+    floorGrid.geometry = new THREE.BufferGeometry().setFromPoints(points);
+    floorGrid.position.z = 0.001;     // just above the planks, clear of z-fighting
+  }
+  layFloorGrid(60, 60, 0, 0);
 
   const controls = new THREE.OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
@@ -727,6 +778,7 @@ Panels.define('robot-scene', function (root, bus) {
     ground.geometry.dispose();
     ground.geometry = new THREE.PlaneGeometry(w, d);
     ground.position.set((box.min.x + box.max.x) / 2, box.min.y + 0.002, (box.min.z + box.max.z) / 2);
+    layFloorGrid(w, d, ground.position.x, ground.position.z);
     floorTex.repeat.set(w / 0.6, d / 0.6);
     floorTex.needsUpdate = true;
     needsRender = true;
@@ -1632,6 +1684,7 @@ Panels.define('robot-scene', function (root, bus) {
     const markers = lastMarkerPayload ? lastMarkerPayload.markers : [];
     const present = Object.create(null);
     MarkerSettings.visibleMarkers(markers, hiddenMarkerNs).forEach(function (marker) {
+      if (presence.ownHead(marker)) return;     // it would trail in front of the eyes
       const key = MarkerSpecs.key(marker);
       present[key] = true;
       const held = markerObjects[key];

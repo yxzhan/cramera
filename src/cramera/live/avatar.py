@@ -139,9 +139,10 @@ PART_SHAPES: Dict[str, PartShape] = {
     # somewhere, wide enough to read as a head
     "head": PartShape(CUBE_TYPE, (0.13, 0.11, 0.20)),
     # a controller-sized block, long axis forward, so which way a hand is turned
-    # reads at a glance
-    "left": PartShape(CUBE_TYPE, (0.12, 0.05, 0.07)),
-    "right": PartShape(CUBE_TYPE, (0.12, 0.05, 0.07)),
+    # reads at a glance; the same extents the headset draws in the wearer's own
+    # hand (``handBlock`` in web/core/vr-mode.js), so the two coincide
+    "left": PartShape(CUBE_TYPE, (0.12, 0.035, 0.045)),
+    "right": PartShape(CUBE_TYPE, (0.12, 0.035, 0.045)),
 }
 """
 The parts a viewer may publish, and what each is drawn as.
@@ -494,7 +495,9 @@ def observe_avatar(bridge: Bridge, payload: Any) -> Tuple[Dict[str, Any], int]:
 
     :param bridge: The bridge whose marker overlay the viewer joins.
     :param payload: The decoded JSON body.
-    :return: The response body and its HTTP status code.
+    :return: The response body and its HTTP status code. A successful response
+        carries the viewer's name, colour, and the marker id of their own head, which
+        their own view leaves out since it would sit, lagging, in front of their eyes.
     """
     if not isinstance(payload, dict):
         return {"ok": False, "error": "expected a JSON object"}, 400
@@ -504,6 +507,7 @@ def observe_avatar(bridge: Bridge, payload: Any) -> Tuple[Dict[str, Any], int]:
     now = time.monotonic()
     messages: List[SimpleNamespace] = []
     identity = ROSTER.identity_of(viewer)
+    head_identifier = marker_id(viewer, "head")
 
     if payload.get("gone"):
         messages.extend(_delete(identifier) for identifier in ROSTER.drop(viewer))
@@ -562,6 +566,7 @@ def observe_avatar(bridge: Bridge, payload: Any) -> Tuple[Dict[str, Any], int]:
         "viewers": ROSTER.count(),
         "name": identity.name,
         "color": identity.color,
+        "head": head_identifier,
     }, 200
 
 

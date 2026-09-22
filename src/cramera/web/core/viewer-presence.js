@@ -27,6 +27,8 @@
   //: somebody standing still would otherwise be swept away as though they had left.
   //: Well under that timeout, and rare enough to cost nothing.
   const HEARTBEAT_MS = 1000;
+  //: the marker namespace the bridge draws avatars in (``avatar.AVATAR_NAMESPACE``)
+  const AVATAR_NAMESPACE = 'vr_viewer';
 
   //: Turns a viewer-space pose into a marker pose.
   //:
@@ -68,7 +70,9 @@
 
     let postedAt = 0;
     let postedParts = null;      // the poses last posted, for the thresholds
-    let identity = { name: '', color: '' };   // as the bridge last admitted this viewer
+    // as the bridge last admitted this viewer; ``head`` is the marker id of their own
+    // head, which their own view leaves out (see ``ownHead``)
+    let identity = { name: '', color: '', head: null };
 
     //: Send one body to the bridge's avatar route, ignoring the outcome.
     //:
@@ -77,7 +81,7 @@
     //:
     //: The bridge answers with who it admitted this viewer as — the name over their
     //: head and the colour they are drawn in, both chosen there because only the
-    //: bridge sees everyone in the room.
+    //: bridge sees everyone in the room — and the marker id their head is drawn under.
     //:
     //: :param base: The bridge's base url.
     //: :param body: The JSON body to post.
@@ -93,7 +97,7 @@
           return response.ok ? response.json() : null;
         }).then(function (answer) {
           if (!answer || !answer.name || answer.name === identity.name) return;
-          identity = { name: answer.name, color: answer.color };
+          identity = { name: answer.name, color: answer.color, head: answer.head };
           onIdentity(identity);
         }).catch(function () {});
       } catch (e) { /* the bridge is optional */ }
@@ -171,6 +175,14 @@
       withdraw: withdraw,
       id: VIEWER_ID,
       identity: function () { return identity; },
+      //: Whether a published marker is this viewer's own head.
+      //:
+      //: The head marker comes back a network round trip late, so drawn in this
+      //: viewer's own view it trails the real head: step back and it is suddenly in
+      //: front of the eyes, flickering in and out as the posts catch up.
+      ownHead: function (marker) {
+        return identity.head !== null && marker.ns === AVATAR_NAMESPACE && marker.id === identity.head;
+      },
     };
   }
 

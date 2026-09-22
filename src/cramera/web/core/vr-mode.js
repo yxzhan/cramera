@@ -4,7 +4,8 @@
  * The camera rides in the rig core/viewer-rig.js builds, and under a session its
  * own local pose belongs to WebXR: moving a headset viewer through the scene means
  * moving that rig. What this module adds on top is the session itself, the
- * controllers, and the two moves a headset makes — teleport and snap turn, both
+ * controllers, and the two moves a headset makes — teleport (push the right
+ * thumbstick forward, aim, let go) and snap turn (either thumbstick sideways), both
  * deliberately discontinuous, since gliding a headset viewer through a room is the
  * classic way to make them sick.
  *
@@ -24,10 +25,13 @@
   const RAY_LENGTH = 14;
   //: how far one snap turn rotates the rig
   const SNAP_TURN = Math.PI / 6;
-  //: how far the thumbstick has to go before it counts as a turn
-  const SNAP_DEADZONE = 0.72;
-  //: how far back it has to come before the next turn is armed
-  const SNAP_RELEASE = 0.35;
+  //: how far a thumbstick has to go before it counts as a turn or a teleport
+  const STICK_DEADZONE = 0.72;
+  //: how far back it has to come before the next turn is armed, or the teleport
+  //: being aimed lands
+  const STICK_RELEASE = 0.35;
+  //: the controller whose thumbstick teleports
+  const TELEPORT_HAND = 'right';
   //: the teleport reticle's radius, in metres
   const RETICLE_RADIUS = 0.28;
   //: colours for an aim ray that has a landing spot and one that does not
@@ -117,7 +121,7 @@
 
     let session = null;
     let landing = null;          // the world point the active aim would teleport to
-    let aimingWith = null;       // the controller holding the teleport button
+    let aimingWith = null;       // the controller whose thumbstick is pushed forward
     let turnArmed = true;        // false while the thumbstick is still pushed over
     let shadowsWere = null;      // renderer.shadowMap.enabled before the session
     let frames = 0, elapsed = 0, worst = 0, lastStats = null;
@@ -126,13 +130,6 @@
     const controllers = [0, 1].map(function (index) {
       const controller = renderer.xr.getController(index);
       controller.add(aimRay());
-      controller.addEventListener('selectstart', function () { aimingWith = controller; });
-      controller.addEventListener('selectend', function () {
-        if (aimingWith === controller && landing) rig.moveTo(landing);
-        aimingWith = null;
-        landing = null;
-        mark.visible = false;
-      });
       rig.group.add(controller);
 
       const grip = renderer.xr.getControllerGrip(index);
@@ -166,22 +163,49 @@
       if (ray) ray.material.color.setHex(landing ? AIM_OK : AIM_BAD);
     }
 
-    //: Read the thumbsticks and snap-turn on a fresh push past the deadzone.
-    function readTurn() {
+    //: A gamepad's thumbstick as ``{x, y}``: axes 2/3 on a standard xr-controller,
+    //: 0/1 on one that only has a touchpad. Forward is negative ``y``.
+    function stick(pad) {
+      const axes = pad && pad.axes;
+      if (!axes || axes.length < 2) return null;
+      const base = axes.length > 3 ? 2 : 0;
+      return { x: axes[base] || 0, y: axes[base + 1] || 0 };
+    }
+
+    //: Read the thumbsticks: a fresh push forward on the teleport hand starts aiming
+    //: and letting it come back lands there; a fresh push sideways on either one
+    //: snap-turns.
+    function readSticks() {
       if (!session) return;
       let push = 0;
+      let forward = null;        // the teleport hand's stick, and its controller
       const sources = session.inputSources;
       for (let i = 0; i < sources.length; i++) {
-        const pad = sources[i].gamepad;
-        if (!pad || !pad.axes) continue;
-        // thumbstick first (axes 2/3 on a standard xr-controller), touchpad second
-        const x = pad.axes.length > 2 ? pad.axes[2] : pad.axes[0];
-        if (typeof x === 'number' && Math.abs(x) > Math.abs(push)) push = x;
+        const axes = stick(sources[i].gamepad);
+        if (!axes) continue;
+        const teleportHand = sources[i].handedness === TELEPORT_HAND && !!controllers[i];
+        if (teleportHand) forward = { axes: axes, controller: controllers[i] };
+        // while the teleport hand is aiming, its stick wanders sideways as it is
+        // steered, which must not turn the viewer mid-aim
+        if (teleportHand && aimingWith) continue;
+        if (Math.abs(axes.x) > Math.abs(push)) push = axes.x;
       }
-      if (turnArmed && Math.abs(push) > SNAP_DEADZONE) {
+
+      if (!aimingWith && forward && -forward.axes.y > STICK_DEADZONE
+        && Math.abs(forward.axes.y) > Math.abs(forward.axes.x)) {
+        aimingWith = forward.controller;
+      } else if (aimingWith && (!forward || -forward.axes.y < STICK_RELEASE)) {
+        if (landing) rig.moveTo(landing);
+        aimingWith = null;
+        landing = null;
+        mark.visible = false;
+      }
+
+      if (aimingWith) return;
+      if (turnArmed && Math.abs(push) > STICK_DEADZONE) {
         rig.turn(push > 0 ? -SNAP_TURN : SNAP_TURN);
         turnArmed = false;
-      } else if (!turnArmed && Math.abs(push) < SNAP_RELEASE) {
+      } else if (!turnArmed && Math.abs(push) < STICK_RELEASE) {
         turnArmed = true;
       }
     }
@@ -203,12 +227,12 @@
       return parts;
     }
 
-    //: One frame of VR mode: aim, turn, and keep the frame-time tally.
+    //: One frame of VR mode: read the sticks, aim, and keep the frame-time tally.
     //:
     //: :param delta: Seconds since the previous frame.
     function update(delta) {
+      readSticks();
       aim();
-      readTurn();
       if (delta > 0 && delta < 1) {
         frames++;
         elapsed += delta;
@@ -281,7 +305,7 @@
     supported(function (ok) {
       button.style.display = ok ? '' : 'none';
       button.title = ok
-        ? 'View the scene from inside it. Trigger to teleport, thumbstick to turn.'
+        ? 'View the scene from inside it. Right thumbstick forward to teleport, sideways to turn.'
         : '';
     });
 
