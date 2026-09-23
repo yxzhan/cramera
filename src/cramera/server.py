@@ -67,6 +67,7 @@ from cramera.models_workbench import (
 )
 from cramera.onboard.scene_index import InvalidSceneName, merged_scene_index
 from cramera.payload import CrameraPayload
+from cramera.session_token import session_token
 
 logger = get_logger(__name__)
 
@@ -276,6 +277,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             )
         if route == "/api/plan/scaffold/log":
             return self._scaffold_log()
+        if route == "/api/session/token":
+            # the viewer listens on localhost only, so from outside the pod this is
+            # reached through the Jupyter server's proxy, which already demands the token
+            return self._send_json({"token": session_token()})
         return super().do_GET()
 
     @staticmethod

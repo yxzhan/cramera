@@ -32,6 +32,9 @@
   const STICK_RELEASE = 0.35;
   //: the controller whose thumbstick teleports
   const TELEPORT_HAND = 'right';
+  //: how level a surface has to be to stand on: the least upward component of its
+  //: normal, here that of a 35 degree slope — a tabletop passes, its edge does not
+  const STANDABLE_NORMAL_Y = Math.cos(35 * Math.PI / 180);
   //: the teleport reticle's radius, in metres
   const RETICLE_RADIUS = 0.28;
   //: colours for an aim ray that has a landing spot and one that does not
@@ -95,7 +98,8 @@
   //:
   //: :param options: ``renderer``, ``scene``, ``camera``, ``rig`` (the ViewerRig
   //:     handle), ``controls`` (the OrbitControls to stand down while presenting),
-  //:     ``ground`` (the mesh a teleport ray lands on), ``button`` (the element
+  //:     ``ground`` (the floor a teleport ray lands on), ``surfaces`` (returning
+  //:     every further mesh it may land on, such as the furniture), ``button`` (the element
   //:     that opens a session) and ``onChange`` (called with true on entering and
   //:     false on leaving).
   //: :return: The mode's handle — ``presenting()``, ``update()`` to be called once
@@ -108,6 +112,7 @@
     const rig = options.rig;
     const controls = options.controls;
     const ground = options.ground;
+    const surfaces = options.surfaces || function () { return []; };
     const button = options.button;
     const onChange = options.onChange || function () {};
 
@@ -118,10 +123,13 @@
     const origin = new THREE.Vector3();
     const direction = new THREE.Vector3();
     const facing = new THREE.Quaternion();
+    const normal = new THREE.Vector3();
+    const normalMatrix = new THREE.Matrix3();
 
     let session = null;
     let landing = null;          // the world point the active aim would teleport to
     let aimingWith = null;       // the controller whose thumbstick is pushed forward
+    let targets = [];            // the meshes the current aim may land on
     let turnArmed = true;        // false while the thumbstick is still pushed over
     let shadowsWere = null;      // renderer.shadowMap.enabled before the session
     let frames = 0, elapsed = 0, worst = 0, lastStats = null;
@@ -156,11 +164,23 @@
       direction.set(0, 0, -1).applyQuaternion(controller.getWorldQuaternion(facing));
       raycaster.set(origin, direction);
       raycaster.far = RAY_LENGTH;
-      const hit = ground ? raycaster.intersectObject(ground, false)[0] : null;
-      landing = hit ? hit.point.clone() : null;
+      // the nearest thing the ray meets, so it stops at a tabletop or a wall rather
+      // than passing through to the floor behind; only somewhere level is a landing
+      const hit = raycaster.intersectObjects(targets, false)[0];
+      landing = hit && standable(hit) ? hit.point.clone() : null;
       mark.visible = !!landing;
       if (landing) mark.position.set(landing.x, landing.y + 0.01, landing.z);
       if (ray) ray.material.color.setHex(landing ? AIM_OK : AIM_BAD);
+    }
+
+    //: Whether a ray hit is somewhere to stand: a surface facing up, taking the
+    //: side the ray arrived on, since a double-sided mesh can be hit from the back.
+    function standable(hit) {
+      if (!hit.face) return true;
+      normalMatrix.getNormalMatrix(hit.object.matrixWorld);
+      normal.copy(hit.face.normal).applyMatrix3(normalMatrix).normalize();
+      if (normal.dot(direction) > 0) normal.negate();
+      return normal.y >= STANDABLE_NORMAL_Y;
     }
 
     //: A gamepad's thumbstick as ``{x, y}``: axes 2/3 on a standard xr-controller,
@@ -194,6 +214,8 @@
       if (!aimingWith && forward && -forward.axes.y > STICK_DEADZONE
         && Math.abs(forward.axes.y) > Math.abs(forward.axes.x)) {
         aimingWith = forward.controller;
+        // gathered once per aim, since the furniture only changes on a scene load
+        targets = (ground ? [ground] : []).concat(surfaces());
       } else if (aimingWith && (!forward || -forward.axes.y < STICK_RELEASE)) {
         if (landing) rig.moveTo(landing);
         aimingWith = null;
@@ -248,6 +270,8 @@
       // origin and its local pose is WebXR's from here on; only the rig is ours
       rig.adopt(0);
       rig.place();
+      console.log('[cramera] VR session: floor at y=' + rig.floor().toFixed(3)
+        + ', reference space ' + FLOOR_SPACE);
       if (NO_SHADOW_FLAG.test(global.location.search)) {
         shadowsWere = renderer.shadowMap.enabled;
         renderer.shadowMap.enabled = false;

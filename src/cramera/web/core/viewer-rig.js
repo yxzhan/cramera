@@ -36,12 +36,15 @@
 
   //: Build the rig and adopt the camera into it.
   //:
-  //: :param options: ``scene``, ``camera`` and ``worldRoot``.
+  //: :param options: ``scene``, ``camera``, ``worldRoot`` and ``floor`` (returning
+  //:     the height of the floor the viewer stands on, in three's y-up space; the
+  //:     scene's origin when absent).
   //: :return: The rig's handle — its ``group``, and the moves a mode can make.
   function install(options) {
     const scene = options.scene;
     const camera = options.camera;
     const worldRoot = options.worldRoot;
+    const floor = options.floor || function () { return 0; };
 
     // while no mode is active the rig sits at the origin, so the orbiting camera is
     // unaffected: its local pose is still its world pose
@@ -85,7 +88,10 @@
         entry.applyMatrix4(worldRoot.matrixWorld);
         centre.applyMatrix4(worldRoot.matrixWorld);
       }
-      group.position.set(entry.x, 0, entry.z);
+      // on the floor as drawn, which is fitted to the environment and need not be
+      // at the origin: a headset measures eye height from the rig, so a rig below
+      // the drawn floor puts the eyes that much too low
+      group.position.set(entry.x, floor(), entry.z);
       offset.subVectors(centre, entry);
       offset.y = 0;
       if (offset.lengthSq() < 1e-6) offset.set(0, 0, 1);
@@ -98,12 +104,12 @@
     //: play space, which is not above the rig's origin; moving the rig itself would
     //: land them that same offset away from where they aimed.
     //:
-    //: :param point: The destination in three's y-up space.
+    //: :param point: The destination on the floor, in three's y-up space.
     function moveTo(point) {
       camera.getWorldPosition(head);
       group.position.x += point.x - head.x;
       group.position.z += point.z - head.z;
-      group.position.y = 0;
+      group.position.y = point.y;
     }
 
     //: Rotate the rig about the vertical axis through the head, so a turn pivots
@@ -129,6 +135,7 @@
 
     return {
       group: group,
+      floor: floor,
       place: place,
       adopt: adopt,
       moveTo: moveTo,

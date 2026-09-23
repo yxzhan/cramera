@@ -3,9 +3,11 @@
 # needed for the knowledge panel, the onboarder and the live bridge hooks —
 # inside this workspace they are present.
 #
-# rapidfuzz is the one small third-party dependency: it scores how similar a
-# spoken question is to the ready-made queries' wordings (see
-# cramera.knowledge.question_matching), and is a self-contained wheel with no
-# dependencies of its own.
+# rapidfuzz scores how similar a spoken question is to the ready-made queries'
+# wordings (see cramera.knowledge.question_matching), and is a self-contained
+# wheel with no dependencies of its own.
 rapidfuzz>=3.0
 
+# jupyter_core locates the Jupyter runtime directory, where the token a shared
+# session link needs is read from (see cramera.session_token).
+jupyter_core>=5.0

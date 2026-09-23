@@ -193,7 +193,7 @@
       move.applyAxisAngle(new THREE.Vector3(0, 1, 0), rig.group.rotation.y);
       const speed = WALK_SPEED * (running ? RUN_MULTIPLIER : 1) * Math.min(delta, 0.1);
       rig.group.position.addScaledVector(move, speed);
-      rig.group.position.y = 0;
+      rig.group.position.y = rig.floor();
       return true;
     }
 

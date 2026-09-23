@@ -39,6 +39,22 @@
     try { return (storage && storage.getItem(TOKEN_KEY)) || null; } catch (e) { return null; }
   }
 
+  //: The session token, asking the viewer's server for it when the page was opened
+  //: without one — from the Jupyter launcher, say, where the proxy's cookie let it
+  //: in with none in the url.
+  //:
+  //: :param known: The token the page already has, or null.
+  //: :param route: The server's token route, resolved against the page.
+  //: :return: A promise of the token, or of null when there is none to be had.
+  function resolveToken(known, route) {
+    if (known) return Promise.resolve(known);
+    return global.fetch(route).then(function (response) {
+      return response.ok ? response.json() : null;
+    }).then(function (answer) {
+      return (answer && answer.token) || null;
+    }).catch(function () { return null; });
+  }
+
   //: The link that brings someone else to what this page shows: the same page and
   //: query, with the session token put back if the address bar lost it.
   //:
@@ -90,6 +106,7 @@
     TOKEN_PARAM: TOKEN_PARAM,
     PAIRING_SERVICE: PAIRING_SERVICE,
     sessionToken: sessionToken,
+    resolveToken: resolveToken,
     link: link,
     pairingService: pairingService,
     requestCode: requestCode,

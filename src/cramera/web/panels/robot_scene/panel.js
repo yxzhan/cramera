@@ -2065,7 +2065,10 @@ Panels.define('robot-scene', function (root, bus) {
   // a live demo). Either way the camera stops being the orbiting camera, so the
   // four places below that assume one — the orbit controls, the post-processing
   // chain, the on-demand render gate and the canvas resize — stand down.
-  const rig = ViewerRig.install({ scene: scene3, camera: camera, worldRoot: worldRoot });
+  const rig = ViewerRig.install({
+    scene: scene3, camera: camera, worldRoot: worldRoot,
+    floor: function () { return ground.position.y; },
+  });
   const viewerNameEl = $('viewer-name');
   const presence = ViewerPresence.install({
     camera: camera,
@@ -2092,6 +2095,14 @@ Panels.define('robot-scene', function (root, bus) {
     rig: rig,
     controls: controls,
     ground: ground,
+    // the environment's meshes, gathered afresh since models finish loading late
+    surfaces: function () {
+      const meshes = [];
+      models.forEach(function (m) {
+        if (!m.robot) m.obj.traverse(function (c) { if (c.isMesh && c.visible) meshes.push(c); });
+      });
+      return meshes;
+    },
     button: $('scene-vr'),
     onChange: function (presenting) {
       if (presenting) return;
@@ -2129,10 +2140,9 @@ Panels.define('robot-scene', function (root, bus) {
     const service = ShareLink.pairingService(window.location.search);
     let storage = null;
     try { storage = window.sessionStorage; } catch (e) { /* blocked storage */ }
-    const token = ShareLink.sessionToken(window.location.search, storage);
+    const knownToken = ShareLink.sessionToken(window.location.search, storage);
     let countdown = null, pending = 0;
     $('share-address').textContent = ShareLink.typedAddress(service);
-    $('share-warning').classList.toggle('hidden', !!token);
 
     function stopCountdown() { if (countdown) { clearInterval(countdown); countdown = null; } }
 
@@ -2170,15 +2180,25 @@ Panels.define('robot-scene', function (root, bus) {
     }
 
     function open() {
-      // the link is taken at the moment of sharing, so it lands on the scene shown now
-      const target = ShareLink.link(window.location.href, token);
-      linkEl.value = target;
-      const qr = qrcode(0, 'M');
-      qr.addData(target);
-      qr.make();
-      $('share-qr').innerHTML = qr.createSvgTag({ cellSize: 4, margin: 3, scalable: true });
+      const request = ++pending;
+      linkEl.value = '';
+      $('share-qr').innerHTML = '';
+      codeEl.textContent = '····';
+      statusEl.textContent = '';
+      newCodeEl.classList.add('hidden');
       dialog.classList.remove('hidden');
-      pair(target);
+      ShareLink.resolveToken(knownToken, SceneContext.url('/api/session/token')).then(function (token) {
+        if (request !== pending) return;
+        $('share-warning').classList.toggle('hidden', !!token);
+        // the link is taken at the moment of sharing, so it lands on the scene shown now
+        const target = ShareLink.link(window.location.href, token);
+        linkEl.value = target;
+        const qr = qrcode(0, 'M');
+        qr.addData(target);
+        qr.make();
+        $('share-qr').innerHTML = qr.createSvgTag({ cellSize: 4, margin: 3, scalable: true });
+        pair(target);
+      });
     }
     function close() {
       dialog.classList.add('hidden');
