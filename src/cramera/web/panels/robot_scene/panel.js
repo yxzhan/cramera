@@ -2190,8 +2190,11 @@ Panels.define('robot-scene', function (root, bus) {
       ShareLink.resolveToken(knownToken, SceneContext.url('/api/session/token')).then(function (token) {
         if (request !== pending) return;
         $('share-warning').classList.toggle('hidden', !!token);
-        // the link is taken at the moment of sharing, so it lands on the scene shown now
-        const target = ShareLink.link(window.location.href, token);
+        // the scene alone, the way the pop-out shows it: someone joining wants to be
+        // in the scene, not in the workbench around it; a live demo is shared as
+        // live, so the link keeps following whatever runs next
+        const page = SceneContext.popOutUrl(liveOn ? LIVE_SCENE_NAME : null);
+        const target = ShareLink.link(page, token);
         linkEl.value = target;
         const qr = qrcode(0, 'M');
         qr.addData(target);

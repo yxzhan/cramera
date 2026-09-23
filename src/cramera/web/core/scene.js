@@ -81,9 +81,13 @@
     return framed && /[?&](replay=|scene(\b|=))/.test(window.location.search);
   }
 
-  //: the url that opens the active scene alone in a window of its own
-  function popOutUrl() {
-    return withScene(VIEWER_PAGE) + (name() ? '&' : '?') + 'layout=' + LAYOUT_SCENE;
+  //: the url that opens a scene alone in a window of its own
+  //:
+  //: :param scene: The scene to open; the active one when absent.
+  function popOutUrl(scene) {
+    const shown = scene || name();
+    return url(VIEWER_PAGE) + (shown ? '?scene=' + encodeURIComponent(shown) + '&' : '?')
+      + 'layout=' + LAYOUT_SCENE;
   }
 
   window.SceneContext = {

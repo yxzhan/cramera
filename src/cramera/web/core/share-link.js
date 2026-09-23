@@ -55,13 +55,13 @@
     }).catch(function () { return null; });
   }
 
-  //: The link that brings someone else to what this page shows: the same page and
-  //: query, with the session token put back if the address bar lost it.
+  //: The link that brings someone else into the session: ``page`` with the session
+  //: token added.
   //:
-  //: :param href: This page's url, ``window.location.href``.
+  //: :param page: The page to send them to, as an absolute url.
   //: :param token: The session token, or null.
-  function link(href, token) {
-    const url = new URL(href);
+  function link(page, token) {
+    const url = new URL(page);
     url.hash = '';
     if (token) url.searchParams.set(TOKEN_PARAM, token);
     return url.toString();
