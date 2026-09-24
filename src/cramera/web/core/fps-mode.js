@@ -138,7 +138,12 @@
         if (event.pointerType === 'mouse' && canvas.requestPointerLock
           && document.pointerLockElement !== canvas) canvas.requestPointerLock();
       }
-      canvas.setPointerCapture(event.pointerId);
+      // Not under pointer lock: a locked pointer cannot be captured -- the lock already
+      // routes it here -- and asking throws InvalidStateError. Chrome grants the lock
+      // requested just above quickly enough to be in place by now on the first click.
+      if (document.pointerLockElement !== canvas) {
+        try { canvas.setPointerCapture(event.pointerId); } catch (e) { /* locked meanwhile */ }
+      }
       event.preventDefault();
     }
 

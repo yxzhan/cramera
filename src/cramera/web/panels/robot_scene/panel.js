@@ -2533,9 +2533,26 @@ Panels.define('robot-scene', function (root, bus) {
     onChange: function (walking) {
       if (!walking) presence.withdraw(false);
       fpsHand.show(walking);
+      walkFullscreen(walking);
       needsRender = true;
     },
   });
+
+  //: Walking fills the screen: the stage -- the canvas with the walking hint and the
+  //: leave button over it -- goes fullscreen on entering, and comes back on leaving.
+  //: Called from the button's click, the user gesture a fullscreen request needs.
+  //: Leaving fullscreen by hand (Esc, a second time once the cursor is released) keeps
+  //: the viewer walking in the page; the canvas follows either way (resize observer).
+  function walkFullscreen(walking) {
+    const stage = container.parentElement;
+    if (walking) {
+      if (!document.fullscreenElement && stage && stage.requestFullscreen) {
+        stage.requestFullscreen().catch(function () {});
+      }
+    } else if (document.fullscreenElement === stage && document.exitFullscreen) {
+      document.exitFullscreen().catch(function () {});
+    }
+  }
 
   // %% the walking viewer's right hand
   //
@@ -2551,15 +2568,20 @@ Panels.define('robot-scene', function (root, bus) {
     const FPS_GRAB_RADIUS = 0.03;
     //: where it sits relative to the eye, in metres: a little right of and below the
     //: centre of the view, so what it reaches for is what the viewer looks at, and how
-    //: far out -- starting a forearm's length in front of the head
+    //: far out -- starting an arm's length in front of the head
     const RIGHT = 0.04, DOWN = 0.04;
-    const REACH_START = 0.2, REACH_MIN = 0.1, REACH_MAX = 1.5, REACH_STEP = 0.05;
+    const REACH_START = 0.6, REACH_MIN = 0.2, REACH_MAX = 1.5, REACH_STEP = 0.05;
+    //: how it is turned relative to the view: 45 degrees about each of x, y and z (in
+    //: that order), a wrist cocked the way a held controller is rather than a block
+    //: pointing dead ahead -- so what it holds, a marker, turns with it the same way
+    const TILT = new THREE.Euler(Math.PI / 4, Math.PI / 4, Math.PI / 4, 'XYZ');
     const object = new THREE.Group();          // -Z forward, like a controller grip
     object.add(new THREE.Mesh(
       new THREE.BoxGeometry(0.045, 0.035, 0.12),
       new THREE.MeshStandardMaterial({ color: 0x2a3340, roughness: 0.6, metalness: 0.1 })
     ));
     object.visible = false;
+    object.rotation.copy(TILT);
     camera.add(object);
     let reach = REACH_START;
     let squeezing = false;
@@ -2577,20 +2599,29 @@ Panels.define('robot-scene', function (root, bus) {
       squeeze: function () { return squeezing ? 1 : 0; },
     });
 
+    // The buttons are read off ``buttons``, the mask of every button down, on every
+    // pointer event -- not off pointerdown / pointerup alone: while one button is held,
+    // pressing or letting go of another fires neither (pointer events chord them into
+    // a pointermove), so the grip pressed while the trigger holds a marker, which is
+    // the whole point of it, would never be seen.
+    let triggerDown = false;
+    function readButtons(e) {
+      if (!locked()) return false;
+      const trigger = (e.buttons & 1) !== 0, grip = (e.buttons & 2) !== 0;
+      if (trigger && !triggerDown) vrGrab.press('fps');
+      if (!trigger && triggerDown) vrGrab.release('fps');
+      triggerDown = trigger;
+      squeezing = grip;
+      return true;
+    }
     // capturing, so a locked click is the hand's rather than a look or a drag
     canvas.addEventListener('pointerdown', function (e) {
-      if (!locked()) return;
-      if (e.button === 0) vrGrab.press('fps');
-      else if (e.button === 2) squeezing = true;
-      else return;
+      if (!readButtons(e)) return;
       e.preventDefault();
       e.stopImmediatePropagation();
     }, { capture: true });
-    canvas.addEventListener('pointerup', function (e) {
-      if (!fps.active()) return;
-      if (e.button === 0) vrGrab.release('fps');
-      else if (e.button === 2) squeezing = false;
-    }, { capture: true });
+    canvas.addEventListener('pointermove', readButtons, { capture: true });
+    canvas.addEventListener('pointerup', readButtons, { capture: true });
     canvas.addEventListener('contextmenu', function (e) {
       if (fps.active()) e.preventDefault();
     }, { capture: true });
@@ -2607,12 +2638,19 @@ Panels.define('robot-scene', function (root, bus) {
     document.addEventListener('pointerlockchange', function () {
       if (document.pointerLockElement === canvas) return;
       vrGrab.release('fps');
+      triggerDown = false;
       squeezing = false;
     });
 
     function show(walking) {
       object.visible = walking;
-      if (!walking) { vrGrab.release('fps'); squeezing = false; reach = REACH_START; place(); }
+      if (!walking) {
+        vrGrab.release('fps');
+        triggerDown = false;
+        squeezing = false;
+        reach = REACH_START;
+        place();
+      }
       const hint = $('walk-hint');
       if (walking && hint && !FpsMode.touchFirst()) {
         hint.textContent += ' · click to lock, then: left button grabs, right button closes'
