@@ -30,6 +30,7 @@ from pathlib import Path
 
 from typing_extensions import (
     Any,
+    Callable,
     ClassVar,
     Dict,
     FrozenSet,
@@ -434,6 +435,29 @@ class ObjectKind(StrEnum):
 
 
 @dataclass(frozen=True)
+class GripEntry:
+    """
+    The joint that opens and closes an object's fingers -- a teleop marker's claw -- as a
+    VR controller squeezing its grip button drives it.
+    """
+
+    joint: str
+    """
+    The connection's full name, as ``POST /joint`` takes it.
+    """
+
+    lower: float
+    """
+    Its position when the fingers are shut, in the connection's own unit.
+    """
+
+    upper: float
+    """
+    Its position when they are wide open.
+    """
+
+
+@dataclass(frozen=True)
 class ObjectCatalogEntry:
     """
     One loose object's geometry-catalog entry, as the viewer spawns it.
@@ -484,6 +508,23 @@ class ObjectCatalogEntry:
     The body has no collision geometry -- a marker, a target frame -- so nothing rests on
     it and it rests on nothing. A drag moves it freely in 3D rather than dropping it onto
     the surface beneath, as it does a physical object.
+    """
+
+    draggable: bool = True
+    """
+    Whether a drag can move it: only a body on a free (6-DoF) connection can be put
+    anywhere (see :meth:`Bridge._apply_move`). A marker's finger, on a slide, is not.
+    """
+
+    attached_to: Optional[str] = None
+    """
+    The published object this one hangs off, if it hangs off one -- a marker's finger
+    names its marker -- so the viewer can treat the two as one thing.
+    """
+
+    grip: Optional[GripEntry] = None
+    """
+    The joint that opens and closes this object's fingers, if it has any.
     """
 
 
@@ -825,6 +866,18 @@ class Bridge:
     _moves_lock: threading.Lock = field(default_factory=threading.Lock)
     """
     Guards :attr:`_moves` (written by HTTP threads).
+    """
+
+    avatar_listeners: List[Callable[[str, Optional[List[Dict[str, Any]]]], None]] = field(
+        default_factory=list
+    )
+    """
+    Told of every viewer's report as it arrives (``POST /avatar``): the viewer's id and
+    its parts -- ``{name, position, quaternion, grab, scale, color}``, in the world frame,
+    drawn as the overlay draws them (a ``scale``-sized block in the viewer's ``color``) -- or None
+    when the viewer left. For a demo that does something with where the people inside
+    the scene hold their hands, beyond drawing them. Called on the HTTP thread; a
+    listener that raises is logged and skipped.
     """
 
     _teleop: Optional[Any] = None
@@ -2072,6 +2125,9 @@ class Bridge:
         catalog: List[ObjectCatalogEntry] = []
         serve: Dict[str, str] = {}
         palette = ObjectPalette()
+        keys_by_body = {
+            id(body): key for key, body in bodies.items() if key != ROBOT_BASE_KEY
+        }
         for index, (key, body) in enumerate(
             item for item in bodies.items() if item[0] != ROBOT_BASE_KEY
         ):
@@ -2092,11 +2148,37 @@ class Bridge:
                 replace(
                     entry,
                     floating=bool(body.visual.shapes) and not body.collision.shapes,
+                    draggable=isinstance(body.parent_connection, Connection6DoF),
+                    attached_to=keys_by_body.get(
+                        id(body.parent_kinematic_structure_entity)
+                    ),
+                    grip=self._grip_of(body, keys_by_body),
                 )
             )
         self._mesh_serve = serve
         with self._lock:
             self.object_metadata = catalog
+
+    def _grip_of(self, body: Body, keys_by_body: Dict[int, str]) -> Optional[GripEntry]:
+        """
+        The joint that opens ``body``'s fingers: a 1-DOF connection from it to another
+        published object, whose limits say shut and open. The first one wins; fingers
+        mirrored off one degree of freedom move together whichever is driven.
+
+        :param body: The body whose fingers are looked for.
+        :param keys_by_body: The published objects, by ``id`` of their body.
+        """
+        for connection in body._world.connections:
+            if connection.parent is not body or id(connection.child) not in keys_by_body:
+                continue
+            if not isinstance(connection, ActiveConnection1DOF):
+                continue
+            limits = connection.dof.limits
+            lower, upper = limits.lower.position, limits.upper.position
+            if lower is None or upper is None:
+                continue
+            return GripEntry(joint=str(connection.name), lower=float(lower), upper=float(upper))
+        return None
 
     def _shape_catalog_entry(
         self,

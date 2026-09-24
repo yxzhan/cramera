@@ -135,11 +135,13 @@
           name: parts[i].name,
           position: partPosition.clone(),
           quaternion: partQuaternion.clone(),
+          grab: !!parts[i].grab,
         };
         measured.push(pose);
         if (changed) continue;
         const was = postedParts[i];
         if (was.name !== pose.name
+          || was.grab !== pose.grab
           || was.position.distanceTo(pose.position) >= MOVE_THRESHOLD
           || was.quaternion.angleTo(pose.quaternion) >= TURN_THRESHOLD) changed = true;
       }
@@ -158,6 +160,9 @@
             quaternion: [
               pose.quaternion.x, pose.quaternion.y, pose.quaternion.z, pose.quaternion.w,
             ],
+            // the hand's trigger held with nothing of the viewer's own in it: a demo
+            // with ghost hands takes hold of whatever is there
+            grab: pose.grab,
           };
         }),
       }, false);

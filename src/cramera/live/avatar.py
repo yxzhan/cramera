@@ -482,11 +482,23 @@ The one roster, alongside the one bridge the live process serves.
 """
 
 
+def _tell_listeners(bridge: Bridge, viewer: str, parts: Optional[List[Dict[str, Any]]]) -> None:
+    """Hand one viewer's report to :attr:`Bridge.avatar_listeners`.
+
+    :param parts: The viewer's parts, or None when it left.
+    """
+    for listener in list(getattr(bridge, "avatar_listeners", [])):
+        try:
+            listener(viewer, parts)
+        except Exception:  # a demo's listener must not cost the viewer its avatar
+            logger.exception("avatar listener failed")
+
+
 def observe_avatar(bridge: Bridge, payload: Any) -> Tuple[Dict[str, Any], int]:
     """
     Apply one headset's report to the marker overlay.
 
-    The payload is ``{viewer, parts: [{name, position, quaternion}, ...]}`` with the
+    The payload is ``{viewer, parts: [{name, position, quaternion, grab?}, ...]}`` with the
     poses in the *world* frame — the z-up frame every other published pose uses — or
     ``{viewer, gone: true}`` when the headset is leaving. Poses are validated here,
     on the HTTP thread, so malformed input is refused rather than reaching the marker
@@ -511,6 +523,7 @@ def observe_avatar(bridge: Bridge, payload: Any) -> Tuple[Dict[str, Any], int]:
 
     if payload.get("gone"):
         messages.extend(_delete(identifier) for identifier in ROSTER.drop(viewer))
+        _tell_listeners(bridge, viewer, None)
     else:
         parts = payload.get("parts")
         if not isinstance(parts, list) or not parts:
@@ -558,6 +571,17 @@ def observe_avatar(bridge: Bridge, payload: Any) -> Tuple[Dict[str, Any], int]:
             )
         # a part this viewer has stopped tracking stops being drawn
         messages.extend(_delete(identifier) for identifier in dropped)
+        _tell_listeners(bridge, viewer, [
+            {
+                "name": pose.name,
+                "position": list(pose.position),
+                "quaternion": list(pose.quaternion),
+                "grab": bool(part.get("grab")),
+                "scale": list(pose.shape.scale),
+                "color": identity.color,
+            }
+            for pose, part in zip(poses, parts)
+        ])
 
     messages.extend(_delete(identifier) for identifier in ROSTER.expired(now))
     bridge.observe_ros_markers(AVATAR_TOPIC, messages)
