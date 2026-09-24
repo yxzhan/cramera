@@ -45,7 +45,7 @@ Panels.define('robot-scene', function (root, bus) {
     '    <div id="marker-settings" class="marker-settings hidden"></div>' +
     '    <label class="lp-row" title="an axis triad on every frame of the world — URDF links and loose objects (red X, green Y, blue Z)"><input type="checkbox" id="lyr-frames"><span>TF frames</span><button id="frame-gear" class="layer-gear" title="frame axis size and names">⚙</button></label>' +
     '    <div id="frame-settings" class="frame-settings hidden"></div>' +
-    '    <label class="lp-row"><input type="checkbox" id="lyr-labels" checked><span>Object labels</span></label>' +
+    '    <label class="lp-row"><input type="checkbox" id="lyr-labels"><span>Object labels</span></label>' +
     '    <label class="lp-row"><input type="checkbox" id="lyr-floor" checked><span>Floor shadow</span></label>' +
     '    <label class="lp-row" title="Keep the robot in view: the camera glides after it while a recording plays or a live demo runs. Off, the camera stays where you pointed it"><input type="checkbox" id="lyr-follow" checked><span>Follow robot</span></label>' +
     '    <label class="lp-row" title="Attach to a running demo whenever one is reachable — including the next run after this one ends — instead of only once per page"><input type="checkbox" id="lyr-auto-live" checked><span>Auto-attach live</span></label>' +
@@ -314,9 +314,9 @@ Panels.define('robot-scene', function (root, bus) {
   const objectLabels = {};       // mesh key -> label sprite
   const liveSpawned = {};        // mesh key -> true for objects added by live mode
   const objectPending = {};      // mesh key -> true while its geometry is loading
-  // on by default, matching the layer's own checkbox: bindLayer only listens for a
+  // off by default, matching the layer's own checkbox: bindLayer only listens for a
   // change, and a label reads this when it is built, so the two have to agree
-  let labelsOn = true;
+  let labelsOn = false;
   const objectIdByKey = {}, objectKeyById = {};
   const _objLoader = new THREE.STLLoader();   // no manager: for live/on-demand loads
 
@@ -1157,6 +1157,79 @@ Panels.define('robot-scene', function (root, bus) {
     }
     return targets;
   }
+  // objects with no collision geometry (markers, target frames), by key: a drag moves
+  // them freely -- sideways on the horizontal plane, up and down with Shift held --
+  // instead of dropping them onto the surface beneath (see ObjectCatalogEntry.floating)
+  const floatingKeys = {};
+  const _camFlat = new THREE.Vector3(), _floatAt = new THREE.Vector3();
+
+  //: How opaque a floating object is in each state: see-through at rest, so it never
+  //: hides the hand it drives; firmer once a controller (or the cursor) is on it, so
+  //: it is clear what the trigger would take; solid while it is held.
+  const FLOAT_OPACITY = { idle: 0.3, near: 0.65, held: 1.0 };
+  const floatLook = {};           // key -> {state, count} last applied
+  let mouseNearKey = null;        // the object under the cursor, while not dragging
+
+  //: Give a floating object the look of ``state``. Only rewrites the materials when
+  //: the state changed or the object gained meshes (they stream in as they load).
+  function lookFloating(key, state) {
+    const g = objectMeshes[key];
+    if (!g) return;
+    const meshes = [];
+    g.traverse(function (c) { if (c.isMesh) meshes.push(c); });
+    const was = floatLook[key];
+    if (was && was.state === state && was.count === meshes.length) return;
+    const opacity = FLOAT_OPACITY[state];
+    meshes.forEach(function (c) {
+      // its own copy, so the look never leaks into another object sharing a material
+      if (!c.userData.ownLook) {
+        c.material = Array.isArray(c.material)
+          ? c.material.map(function (m) { return m.clone(); })
+          : c.material.clone();
+        c.userData.ownLook = true;
+      }
+      [].concat(c.material).forEach(function (m) {
+        m.transparent = opacity < 1;
+        m.opacity = opacity;
+        m.depthWrite = opacity >= 1;     // see-through must not hide what is behind it
+        m.needsUpdate = true;
+      });
+      c.castShadow = opacity >= 1;
+    });
+    floatLook[key] = { state: state, count: meshes.length };
+    needsRender = true;
+  }
+
+  //: Bring every floating object's look up to date; called once per frame.
+  function lookAllFloating() {
+    for (const key in floatingKeys) {
+      if (!floatingKeys[key]) continue;
+      const held = vrGrab.holds(key) || (dragging && dragTarget && dragTarget.name === key);
+      const near = vrGrab.near(key) || key === mouseNearKey;
+      lookFloating(key, held ? 'held' : near ? 'near' : 'idle');
+    }
+  }
+
+  //: Move a floating object under the cursor: on the horizontal plane through it, or
+  //: with Shift on the vertical plane through it that faces the camera, changing only
+  //: its height. The plane is laid through where the object is now on every move, so
+  //: pressing or letting go of Shift mid-drag carries on from there.
+  function dragFloating(e, g) {
+    g.getWorldPosition(_floatAt);
+    if (e.shiftKey) {
+      camera.getWorldDirection(_camFlat); _camFlat.y = 0;
+      if (_camFlat.lengthSq() < 1e-6) return;
+      _dragPlane.setFromNormalAndCoplanarPoint(_camFlat.normalize(), _floatAt);
+    } else {
+      _dragPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, 1, 0), _floatAt);
+    }
+    const hit = surfacePointAt(e);
+    if (!hit) return;
+    worldRoot.worldToLocal(hit);               // map frame (z-up)
+    if (e.shiftKey) g.position.z = hit.z;
+    else { g.position.x = hit.x; g.position.y = hit.y; }
+  }
+
   // cursor -> world point on the horizontal drag plane (infinite, so the object
   // follows the cursor anywhere — the surface height is fixed afterwards by
   // snapToSurface). The plane is set through the grab point on pointerdown.
@@ -1199,12 +1272,25 @@ Panels.define('robot-scene', function (root, bus) {
   });
   renderer.domElement.addEventListener('pointermove', function (e) {
     if (!dragging) {
-      if (!playing && e.buttons === 0)
-        renderer.domElement.style.cursor = pickDraggable(e) ? 'grab' : '';
+      if (!playing && e.buttons === 0) {
+        const over = pickDraggable(e);
+        renderer.domElement.style.cursor = over ? 'grab' : '';
+        mouseNearKey = over && over.name ? over.name : null;
+      }
       return;
     }
     // object drag: the object follows the cursor onto whatever surface it points
     // at (no relative screen mapping, so no artificial reach limit)
+    if (dragTarget.name && floatingKeys[dragTarget.name]) {
+      const key = dragTarget.name, g = objectMeshes[key];
+      dragFloating(e, g);
+      if (liveOn) {
+        liveDraggedKey = key;
+        postLiveMove(key, g.position.x, g.position.y, g.position.z, false);
+      }
+      needsRender = true;
+      return;
+    }
     if (dragTarget.name) {
       const key = dragTarget.name, g = objectMeshes[key];
       const hit = surfacePointAt(e);             // world point on the drag plane
@@ -1283,6 +1369,7 @@ Panels.define('robot-scene', function (root, bus) {
     if (id && partClickCb) partClickCb(id);
   });
   renderer.domElement.addEventListener('pointercancel', function () { clickArmed = false; endDrag(); });
+  renderer.domElement.addEventListener('pointerleave', function () { mouseNearKey = null; });
 
   function classifyClick(e) {
     pointerNdc(e);
@@ -1891,6 +1978,7 @@ Panels.define('robot-scene', function (root, bus) {
     liveStateKeys = st.objects || {};
     for (const key in liveStateKeys) {
       if (key === liveDraggedKey) continue;    // the mouse owns this one right now
+      if (vrGrab.holds(key)) continue;         // so does a VR controller
       const g = objectMeshes[key];
       if (g) {
         // the running world HAS this object, so it belongs on screen, even if an
@@ -1927,6 +2015,7 @@ Panels.define('robot-scene', function (root, bus) {
         const liveKeys = {};
         live.forEach(function (o) {
           liveKeys[o.key] = 1;
+          floatingKeys[o.key] = !!o.floating;
           if (objectMeshes[o.key]) {                  // already present — reuse
             objectMeshes[o.key].visible = true;
             return;
@@ -2118,6 +2207,124 @@ Panels.define('robot-scene', function (root, bus) {
     },
   });
 
+  // %% VR grab: hold the trigger near an object to carry it, as a mouse drag does
+  //
+  // The object follows the controller locally, every frame, at the offset it was
+  // grabbed at -- position and orientation both -- so it is in the hand with no delay;
+  // the bridge is told at ~30 Hz, and what the demo does with that (a teleop marker
+  // the robot's hand follows) catches up behind it. Same /move as a mouse drag, so a
+  // demo takes or refuses a VR grab exactly as it would a drag.
+  const vrGrab = (function () {
+    //: how close the controller has to be to an object's bounds to take it, in metres
+    const GRAB_RADIUS = 0.08;
+    //: how often a carried object's pose is posted at most, in ms
+    const GRAB_POST_MS = 33;
+    const held = {};              // controller index -> {key, offset: Matrix4, postedAt}
+    let nearKeys = {};            // what a free controller would take, by key
+    const _box = new THREE.Box3(), _at = new THREE.Vector3();
+    const _m = new THREE.Matrix4(), _toMap = new THREE.Matrix4();
+    const _pos = new THREE.Vector3(), _quat = new THREE.Quaternion(), _scale = new THREE.Vector3();
+    const grips = [0, 1].map(function (i) { return renderer.xr.getControllerGrip(i); });
+
+    function pulse(index) {
+      const session = renderer.xr.getSession && renderer.xr.getSession();
+      const source = session && session.inputSources && session.inputSources[index];
+      const actuator = source && source.gamepad && source.gamepad.hapticActuators
+        && source.gamepad.hapticActuators[0];
+      if (actuator && actuator.pulse) actuator.pulse(0.4, 30);
+    }
+
+    //: The visible object nearest the controller, if one is within reach.
+    function nearest(grip) {
+      grip.getWorldPosition(_at);
+      let best = null, bestDistance = GRAB_RADIUS;
+      for (const key in objectMeshes) {
+        const g = objectMeshes[key];
+        if (!g.visible || holds(key)) continue;
+        const distance = _box.setFromObject(g).distanceToPoint(_at);
+        if (distance <= bestDistance) { best = key; bestDistance = distance; }
+      }
+      return best;
+    }
+
+    function holds(key) {
+      for (const i in held) if (held[i].key === key) return true;
+      return false;
+    }
+
+    function post(key, g, final) {
+      fetch(liveUrl() + '/move', {
+        method: 'POST',
+        body: JSON.stringify({
+          object: key,
+          position: [round3(g.position.x), round3(g.position.y), round3(g.position.z)],
+          quaternion: [g.quaternion.x, g.quaternion.y, g.quaternion.z, g.quaternion.w],
+          final: !!final,
+        }),
+      }).catch(function () {});
+    }
+
+    function grab(index) {
+      if (!liveOn || held[index]) return;
+      const key = nearest(grips[index]);
+      if (!key) return;
+      const g = objectMeshes[key];
+      g.updateWorldMatrix(true, false);
+      // grip -> object, kept for as long as the trigger is held
+      const offset = new THREE.Matrix4().copy(grips[index].matrixWorld).invert()
+        .multiply(g.matrixWorld);
+      held[index] = { key: key, offset: offset, postedAt: 0 };
+      pulse(index);
+    }
+
+    function release(index) {
+      const grip = held[index];
+      if (!grip) return;
+      delete held[index];
+      const g = objectMeshes[grip.key];
+      if (g && liveOn) post(grip.key, g, true);
+    }
+
+    //: Carry every held object to its controller, and note what each free one is
+    //: within reach of; called once per presented frame.
+    function update() {
+      const now = performance.now();
+      nearKeys = {};
+      grips.forEach(function (grip, index) {
+        if (held[index] || !grip.visible) return;
+        const key = nearest(grip);
+        if (key) nearKeys[key] = true;
+      });
+      worldRoot.updateWorldMatrix(true, false);
+      _toMap.copy(worldRoot.matrixWorld).invert();
+      for (const index in held) {
+        const grip = held[index], g = objectMeshes[grip.key];
+        if (!g) { delete held[index]; continue; }
+        // controller pose x grab offset, in the map frame the object group lives in
+        _m.copy(grips[index].matrixWorld).multiply(grip.offset).premultiply(_toMap);
+        _m.decompose(_pos, _quat, _scale);
+        g.position.copy(_pos);
+        g.quaternion.copy(_quat);
+        if (liveOn && now - grip.postedAt >= GRAB_POST_MS) {
+          grip.postedAt = now;
+          post(grip.key, g, false);
+        }
+      }
+    }
+
+    [0, 1].forEach(function (index) {
+      const controller = renderer.xr.getController(index);
+      controller.addEventListener('selectstart', function () { grab(index); });
+      controller.addEventListener('selectend', function () { release(index); });
+    });
+    renderer.xr.addEventListener('sessionend', function () {
+      Object.keys(held).forEach(release);
+      nearKeys = {};
+    });
+
+    return { update: update, holds: holds, near: function (key) { return !!nearKeys[key]; } };
+  })();
+
   const fps = FpsMode.install({
     renderer: renderer,
     camera: camera,
@@ -2249,6 +2456,7 @@ Panels.define('robot-scene', function (root, bus) {
   function tick() {
     if (!running) return;
     const delta = clock.getDelta();
+    lookAllFloating();
     // imported models finish loading asynchronously, so their materials are re-tamed
     // for a while after mount; once that window closes the loop goes on-demand again
     if (models.length && clock.getElapsedTime() < MATERIAL_SETTLE_SECONDS) {
@@ -2270,7 +2478,7 @@ Panels.define('robot-scene', function (root, bus) {
     // owns the camera it has to be left uncalled, not merely disabled
     const driven = inScene();
     const moved = driven ? false : controls.update();
-    if (renderer.xr.isPresenting) vr.update(delta);
+    if (renderer.xr.isPresenting) { vr.update(delta); vrGrab.update(); }
     fps.update(delta);
     if (driven) presence.publish();
     if (playing && traj && !liveOn) {

@@ -23,7 +23,7 @@ import threading
 import time
 import urllib.parse
 import math
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum, StrEnum
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -477,6 +477,13 @@ class ObjectCatalogEntry:
     shapes: Optional[List[ShapeEntry]] = None
     """
     The body's shapes, set only when :attr:`kind` is ``SHAPES``.
+    """
+
+    floating: bool = False
+    """
+    The body has no collision geometry -- a marker, a target frame -- so nothing rests on
+    it and it rests on nothing. A drag moves it freely in 3D rather than dropping it onto
+    the surface beneath, as it does a physical object.
     """
 
 
@@ -2072,15 +2079,19 @@ class Bridge:
             object_id = Path(key).stem
             shapes = self._body_shapes(body)
             if shapes:
-                catalog.append(self._shape_catalog_entry(key, shapes, color, serve))
-                continue
-            catalog.append(
-                ObjectCatalogEntry(
+                entry = self._shape_catalog_entry(key, shapes, color, serve)
+            else:
+                entry = ObjectCatalogEntry(
                     key=key,
                     id=object_id,
                     kind=ObjectKind.BOX,
                     color=color,
                     size=list(self.DEFAULT_OBJECT_SIZE),
+                )
+            catalog.append(
+                replace(
+                    entry,
+                    floating=bool(body.visual.shapes) and not body.collision.shapes,
                 )
             )
         self._mesh_serve = serve

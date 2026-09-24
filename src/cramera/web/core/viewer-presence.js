@@ -14,12 +14,14 @@
 (function (global) {
   'use strict';
 
-  //: how often at most a viewer reports that it has moved, in ms
-  const MOVE_INTERVAL_MS = 100;
+  //: how often at most a viewer reports that it has moved, in ms. ~30 Hz: the hands
+  //: are what someone in a headset watches the robot follow, and at 10 Hz with the
+  //: thresholds below they visibly trailed and jumped behind the controllers
+  const MOVE_INTERVAL_MS = 33;
   //: how far a part must move, in metres, before that is worth a post
-  const MOVE_THRESHOLD = 0.02;
+  const MOVE_THRESHOLD = 0.005;
   //: how far it must turn, in radians, before that is worth a post
-  const TURN_THRESHOLD = 2 * Math.PI / 180;
+  const TURN_THRESHOLD = 1 * Math.PI / 180;
   //: how often a viewer who has not moved reports in anyway, in ms.
   //:
   //: The thresholds above suppress pose updates, not the viewer itself: the bridge
