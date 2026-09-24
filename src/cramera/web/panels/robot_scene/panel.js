@@ -1430,7 +1430,7 @@ Panels.define('robot-scene', function (root, bus) {
   // opens or closes them a tenth of their travel per notch, instead of zooming
   const gripAt = {};                          // joint -> position last asked for
   renderer.domElement.addEventListener('wheel', function (e) {
-    const entry = liveOn && mouseNearKey && objectCatalog[mouseNearKey];
+    const entry = liveOn && !fps.active() && mouseNearKey && objectCatalog[mouseNearKey];
     if (!entry || !entry.grip) return;
     e.preventDefault();
     e.stopImmediatePropagation();
@@ -2100,12 +2100,19 @@ Panels.define('robot-scene', function (root, bus) {
   // after a newer one pulled the robot back to where it had been, which read as a lag
   // that came and went. A snapshot numbered far below the last one is a restarted
   // demo, not a late answer, and is taken.
+  //
+  // And never waiting forever: an answer that does not come -- the demo paused, a
+  // proxy holding the connection -- would otherwise stop the live view for good,
+  // since the next poll waits for this one. It is given up on after LIVE_POLL_TIMEOUT_MS.
+  const LIVE_POLL_TIMEOUT_MS = 2000;
   let livePolling = false;
   function livePoll() {
     if (livePolling) return;
     if (++livePolls % 90 === 0) syncLiveObjects();   // ~3 s catalog reconcile
     livePolling = true;
-    fetch(liveUrl() + '/state').then(function (r) { return r.json(); })
+    const abort = new AbortController();
+    const giveUp = setTimeout(function () { abort.abort(); }, LIVE_POLL_TIMEOUT_MS);
+    fetch(liveUrl() + '/state', { signal: abort.signal }).then(function (r) { return r.json(); })
       .then(function (st) {
         liveFails = 0;
         const seq = st.sequenceNumber;
@@ -2115,7 +2122,7 @@ Panels.define('robot-scene', function (root, bus) {
         }
       })
       .catch(function () { if (++liveFails > 30) setLive(false); })
-      .then(function () { livePolling = false; });
+      .then(function () { clearTimeout(giveUp); livePolling = false; });
   }
   // sync the scene's objects to the ones that actually exist in the running
   // world: spawn any the viewer is missing (geometry served by the bridge),
@@ -2285,7 +2292,9 @@ Panels.define('robot-scene', function (root, bus) {
     // a marker in the live world, so there has to be a live world
     live: function () { return liveOn ? liveUrl() : null; },
     hands: function () {
-      return vr.hands().map(function (part) {
+      // a walking viewer has the one hand, a headset viewer the controllers it tracks
+      const parts = fps.active() ? [{ name: 'right', object: fpsHand.object }] : vr.hands();
+      return parts.map(function (part) {
         return { name: part.name, object: part.object, grab: vrGrab.ghosting(part.name) };
       });
     },
@@ -2338,30 +2347,30 @@ Panels.define('robot-scene', function (root, bus) {
   // the robot's hand follows) catches up behind it. Same /move as a mouse drag, so a
   // demo takes or refuses a VR grab exactly as it would a drag.
   const vrGrab = (function () {
-    //: how close the controller has to be to an object's bounds to take it, in metres
-    const GRAB_RADIUS = 0.08;
+    //: how close a VR controller has to be to an object's bounds to take it, in metres:
+    //: all but touching, so reaching past a marker for what is behind it does not
+    //: take the marker instead
+    const GRAB_RADIUS = 0.01;
     //: how often a carried object's pose is posted at most, in ms
     const GRAB_POST_MS = 33;
-    const held = {};              // controller index -> {key, offset: Matrix4, postedAt}
-    let nearKeys = {};            // what a free controller would take, by key
-    const ghost = {};             // controller index -> true while its trigger ghost-grabs
+    // Every hand that can grab, by id: the headset's two controllers ('0', '1') and the
+    // walking viewer's right hand ('fps'). Each is ``{object, handedness(), squeeze(),
+    // radius, active(), pulse()}``: ``object`` is where the hand is, with -Z forward
+    // like a controller grip; ``squeeze`` how far its grip is pressed, 0..1, or null.
+    const hands = {};
+    const held = {};              // hand id -> {key, offset: Matrix4, postedAt}
+    let nearKeys = {};            // what a free hand would take, by key
+    const ghost = {};             // hand id -> true while its trigger ghost-grabs
     const _box = new THREE.Box3(), _at = new THREE.Vector3();
     const _m = new THREE.Matrix4(), _toMap = new THREE.Matrix4();
     const _pos = new THREE.Vector3(), _quat = new THREE.Quaternion(), _scale = new THREE.Vector3();
-    const grips = [0, 1].map(function (i) { return renderer.xr.getControllerGrip(i); });
 
-    function pulse(index) {
-      const session = renderer.xr.getSession && renderer.xr.getSession();
-      const source = session && session.inputSources && session.inputSources[index];
-      const actuator = source && source.gamepad && source.gamepad.hapticActuators
-        && source.gamepad.hapticActuators[0];
-      if (actuator && actuator.pulse) actuator.pulse(0.4, 30);
-    }
+    function register(id, hand) { hands[id] = hand; }
 
-    //: The visible object nearest the controller, if one is within reach.
-    function nearest(grip) {
-      grip.getWorldPosition(_at);
-      let best = null, bestDistance = GRAB_RADIUS;
+    //: The visible object nearest the hand, if one is within its reach.
+    function nearest(hand) {
+      hand.object.getWorldPosition(_at);
+      let best = null, bestDistance = hand.radius;
       for (const n in objectMeshes) {
         const g = objectMeshes[n], key = grabbableKey(n);
         // only what the viewer owns -- a marker, not a physical object: those belong
@@ -2378,20 +2387,11 @@ Panels.define('robot-scene', function (root, bus) {
       return false;
     }
 
-    //: How far the controller's grip button is pressed, 0..1, or null if it has none.
-    function squeezeValue(index) {
-      const session = renderer.xr.getSession && renderer.xr.getSession();
-      const source = session && session.inputSources && session.inputSources[index];
-      const button = source && source.gamepad && source.gamepad.buttons
-        && source.gamepad.buttons[1];          // xr-standard: 0 trigger, 1 squeeze
-      return button ? button.value : null;
-    }
-
-    //: While a controller holds something with fingers -- a teleop marker -- its grip
-    //: button closes them: released is wide open, pressed all the way is shut.
-    function squeeze(index, grip) {
+    //: While a hand holds something with fingers -- a teleop marker -- its grip closes
+    //: them: released is wide open, pressed all the way is shut.
+    function squeeze(id, grip) {
       const entry = objectCatalog[grip.key];
-      const value = squeezeValue(index);
+      const value = hands[id].squeeze();
       if (!entry || !entry.grip || value === null) return;
       const position = entry.grip.upper - value * (entry.grip.upper - entry.grip.lower);
       if (grip.gripPosted !== undefined && Math.abs(position - grip.gripPosted)
@@ -2415,45 +2415,49 @@ Panels.define('robot-scene', function (root, bus) {
     //: The trigger was pressed: take the marker within reach, or, with none there, hold
     //: a ghost grab -- the demo's ghost hand in the sim takes whatever physical thing
     //: is there (reported through the avatar; see ViewerPresence).
-    function grab(index) {
-      if (!liveOn || held[index]) return;
-      const key = nearest(grips[index]);
-      if (!key) { ghost[index] = true; return; }
+    function grab(id) {
+      const hand = hands[id];
+      if (!liveOn || !hand || held[id]) return;
+      const key = nearest(hand);
+      if (!key) { ghost[id] = true; return; }
       const g = objectMeshes[key];
       g.updateWorldMatrix(true, false);
-      // grip -> object, kept for as long as the trigger is held
-      const offset = new THREE.Matrix4().copy(grips[index].matrixWorld).invert()
+      hand.object.updateWorldMatrix(true, false);
+      // hand -> object, kept for as long as the trigger is held
+      const offset = new THREE.Matrix4().copy(hand.object.matrixWorld).invert()
         .multiply(g.matrixWorld);
-      held[index] = { key: key, offset: offset, postedAt: 0 };
-      pulse(index);
+      held[id] = { key: key, offset: offset, postedAt: 0 };
+      if (hand.pulse) hand.pulse();
     }
 
-    function release(index) {
-      delete ghost[index];
-      const grip = held[index];
+    function release(id) {
+      delete ghost[id];
+      const grip = held[id];
       if (!grip) return;
-      delete held[index];
+      delete held[id];
       const g = objectMeshes[grip.key];
       if (g && liveOn) post(grip.key, g, true);
     }
 
-    //: Carry every held object to its controller, and note what each free one is
-    //: within reach of; called once per presented frame.
+    //: Carry every held object to its hand, and note what each free one is within
+    //: reach of; called once per frame while any hand is in use.
     function update() {
       const now = performance.now();
       nearKeys = {};
-      grips.forEach(function (grip, index) {
-        if (held[index] || !grip.visible) return;
-        const key = nearest(grip);
+      for (const id in hands) {
+        const hand = hands[id];
+        if (!hand.active()) { if (held[id] || ghost[id]) release(id); continue; }
+        if (held[id]) continue;
+        const key = nearest(hand);
         if (key) nearKeys[key] = true;
-      });
+      }
       worldRoot.updateWorldMatrix(true, false);
       _toMap.copy(worldRoot.matrixWorld).invert();
-      for (const index in held) {
-        const grip = held[index], g = objectMeshes[grip.key];
-        if (!g) { delete held[index]; continue; }
-        // controller pose x grab offset, in the map frame the object group lives in
-        _m.copy(grips[index].matrixWorld).multiply(grip.offset).premultiply(_toMap);
+      for (const id in held) {
+        const grip = held[id], g = objectMeshes[grip.key];
+        if (!g) { delete held[id]; continue; }
+        // hand pose x grab offset, in the map frame the object group lives in
+        _m.copy(hands[id].object.matrixWorld).multiply(grip.offset).premultiply(_toMap);
         _m.decompose(_pos, _quat, _scale);
         g.position.copy(_pos);
         g.quaternion.copy(_quat);
@@ -2461,33 +2465,56 @@ Panels.define('robot-scene', function (root, bus) {
         if (liveOn && now - grip.postedAt >= GRAB_POST_MS) {
           grip.postedAt = now;
           post(grip.key, g, false);
-          squeeze(index, grip);
+          squeeze(id, grip);
         }
       }
     }
 
-    [0, 1].forEach(function (index) {
-      const controller = renderer.xr.getController(index);
-      controller.addEventListener('selectstart', function () { grab(index); });
-      controller.addEventListener('selectend', function () { release(index); });
-    });
-    renderer.xr.addEventListener('sessionend', function () {
-      Object.keys(held).forEach(release);
-      Object.keys(ghost).forEach(function (index) { delete ghost[index]; });
-      nearKeys = {};
-    });
-
-    //: Whether the controller held in ``hand`` ('left' / 'right') is ghost-grabbing.
-    function ghosting(hand) {
-      const session = renderer.xr.getSession && renderer.xr.getSession();
-      const sources = (session && session.inputSources) || [];
-      for (const index in ghost) {
-        if (sources[index] && sources[index].handedness === hand) return true;
+    //: Whether the hand called ``name`` ('left' / 'right') is ghost-grabbing.
+    function ghosting(name) {
+      for (const id in ghost) {
+        if (hands[id] && hands[id].active() && hands[id].handedness() === name) return true;
       }
       return false;
     }
 
+    // the headset's controllers
+    function source(index) {
+      const session = renderer.xr.getSession && renderer.xr.getSession();
+      return session && session.inputSources && session.inputSources[index];
+    }
+    [0, 1].forEach(function (index) {
+      const grip = renderer.xr.getControllerGrip(index);
+      register(String(index), {
+        object: grip,
+        radius: GRAB_RADIUS,
+        active: function () { return renderer.xr.isPresenting && grip.visible; },
+        handedness: function () { const s = source(index); return s ? s.handedness : null; },
+        squeeze: function () {
+          const s = source(index);
+          const button = s && s.gamepad && s.gamepad.buttons && s.gamepad.buttons[1];
+          return button ? button.value : null;     // xr-standard: 0 trigger, 1 squeeze
+        },
+        pulse: function () {
+          const s = source(index);
+          const actuator = s && s.gamepad && s.gamepad.hapticActuators
+            && s.gamepad.hapticActuators[0];
+          if (actuator && actuator.pulse) actuator.pulse(0.4, 30);
+        },
+      });
+      const controller = renderer.xr.getController(index);
+      controller.addEventListener('selectstart', function () { grab(String(index)); });
+      controller.addEventListener('selectend', function () { release(String(index)); });
+    });
+    renderer.xr.addEventListener('sessionend', function () {
+      ['0', '1'].forEach(release);
+      nearKeys = {};
+    });
+
     return {
+      register: register,
+      press: grab,
+      release: release,
       update: update,
       holds: holds,
       near: function (key) { return !!nearKeys[key]; },
@@ -2505,9 +2532,96 @@ Panels.define('robot-scene', function (root, bus) {
     hint: $('walk-hint'),
     onChange: function (walking) {
       if (!walking) presence.withdraw(false);
+      fpsHand.show(walking);
       needsRender = true;
     },
   });
+
+  // %% the walking viewer's right hand
+  //
+  // A headset's controller, for a mouse: a block down and to the right of the view,
+  // pointing where the viewer looks, and taking part in everything a controller does
+  // (see vrGrab) -- the left button is its trigger, the right button its grip, and it
+  // is reported as the viewer's right hand, so a demo's ghost hands follow it too.
+  // Only while the cursor is locked: unlocked, the left button still drags the view.
+  const fpsHand = (function () {
+    //: how close it has to be to an object's bounds to take it, in metres. More than
+    //: a controller's centimetre: a hand steered by walking and looking lines up less
+    //: finely than one held
+    const FPS_GRAB_RADIUS = 0.03;
+    //: where it sits relative to the eye, in metres: a little right of and below the
+    //: centre of the view, so what it reaches for is what the viewer looks at, and how
+    //: far out -- starting a forearm's length in front of the head
+    const RIGHT = 0.04, DOWN = 0.04;
+    const REACH_START = 0.2, REACH_MIN = 0.1, REACH_MAX = 1.5, REACH_STEP = 0.05;
+    const object = new THREE.Group();          // -Z forward, like a controller grip
+    object.add(new THREE.Mesh(
+      new THREE.BoxGeometry(0.045, 0.035, 0.12),
+      new THREE.MeshStandardMaterial({ color: 0x2a3340, roughness: 0.6, metalness: 0.1 })
+    ));
+    object.visible = false;
+    camera.add(object);
+    let reach = REACH_START;
+    let squeezing = false;
+    function place() { object.position.set(RIGHT, -DOWN, -reach); }
+    place();
+
+    const canvas = renderer.domElement;
+    function locked() { return fps.active() && document.pointerLockElement === canvas; }
+
+    vrGrab.register('fps', {
+      object: object,
+      radius: FPS_GRAB_RADIUS,
+      active: function () { return fps.active(); },
+      handedness: function () { return 'right'; },
+      squeeze: function () { return squeezing ? 1 : 0; },
+    });
+
+    // capturing, so a locked click is the hand's rather than a look or a drag
+    canvas.addEventListener('pointerdown', function (e) {
+      if (!locked()) return;
+      if (e.button === 0) vrGrab.press('fps');
+      else if (e.button === 2) squeezing = true;
+      else return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }, { capture: true });
+    canvas.addEventListener('pointerup', function (e) {
+      if (!fps.active()) return;
+      if (e.button === 0) vrGrab.release('fps');
+      else if (e.button === 2) squeezing = false;
+    }, { capture: true });
+    canvas.addEventListener('contextmenu', function (e) {
+      if (fps.active()) e.preventDefault();
+    }, { capture: true });
+    // the wheel reaches out and draws back in
+    canvas.addEventListener('wheel', function (e) {
+      if (!locked()) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      reach = Math.min(REACH_MAX, Math.max(REACH_MIN, reach + (e.deltaY < 0 ? REACH_STEP : -REACH_STEP)));
+      place();
+      needsRender = true;
+    }, { passive: false, capture: true });
+    // the cursor released (esc) lets go of everything, as a controller put down does
+    document.addEventListener('pointerlockchange', function () {
+      if (document.pointerLockElement === canvas) return;
+      vrGrab.release('fps');
+      squeezing = false;
+    });
+
+    function show(walking) {
+      object.visible = walking;
+      if (!walking) { vrGrab.release('fps'); squeezing = false; reach = REACH_START; place(); }
+      const hint = $('walk-hint');
+      if (walking && hint && !FpsMode.touchFirst()) {
+        hint.textContent += ' · click to lock, then: left button grabs, right button closes'
+          + ' the claw, wheel reaches';
+      }
+    }
+
+    return { object: object, show: show };
+  })();
 
   // %% inviting others: a QR code and link for phones, a pairing code for headsets
   (function () {
@@ -2648,7 +2762,8 @@ Panels.define('robot-scene', function (root, bus) {
     // owns the camera it has to be left uncalled, not merely disabled
     const driven = inScene();
     const moved = driven ? false : controls.update();
-    if (renderer.xr.isPresenting) { vr.update(delta); vrGrab.update(); }
+    if (renderer.xr.isPresenting) vr.update(delta);
+    if (renderer.xr.isPresenting || fps.active()) vrGrab.update();
     fps.update(delta);
     if (driven) presence.publish();
     if (playing && traj && !liveOn) {
