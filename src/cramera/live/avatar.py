@@ -62,6 +62,11 @@ CUBE_TYPE = 1
 ``Marker.CUBE``, scaled to its extents along the pose's own axes.
 """
 
+SPHERE_TYPE = 2
+"""
+``Marker.SPHERE``, its scale the diameters along the pose's axes: a hand's ball.
+"""
+
 ARROW_TYPE = 0
 """
 ``Marker.ARROW``, running along its pose's +X — which is the line of sight, so an
@@ -111,6 +116,9 @@ is someone to find in the scene, not part of the furniture.
 
 AVATAR_OPACITY = 0.95
 
+HAND_OPACITY = 0.35
+"""How opaque a viewer's hands are drawn -- see-through, so what they hold shows."""
+
 
 @dataclass(frozen=True)
 class PartShape:
@@ -133,6 +141,19 @@ class PartShape:
     length, shaft diameter and head diameter; a cube's is its extents.
     """
 
+    opacity: float = AVATAR_OPACITY
+    """
+    How opaque it is drawn.
+    """
+
+    bar: Optional[Tuple[float, float, float]] = None
+    """
+    A bar drawn behind the part as a second marker, its extents ``(length, width,
+    height)``: it runs back from the part's own shape along -X, the way it points
+    away from. A hand's grip: the ball is where the hand is and grabs, the bar the
+    handle behind it. None for a part drawn as the one shape.
+    """
+
 
 PART_SHAPES: Dict[str, PartShape] = {
     # a headset-sized block: deep enough along the line of sight to read as facing
@@ -141,8 +162,14 @@ PART_SHAPES: Dict[str, PartShape] = {
     # a controller-sized block, long axis forward, so which way a hand is turned
     # reads at a glance; the same extents the headset draws in the wearer's own
     # hand (``handBlock`` in web/core/vr-mode.js), so the two coincide
-    "left": PartShape(CUBE_TYPE, (0.12, 0.035, 0.045)),
-    "right": PartShape(CUBE_TYPE, (0.12, 0.035, 0.045)),
+    # a ball on the end of a bar, as the headset draws the wearer's own hand
+    # (``handBlock`` in web/core/vr-mode.js): the ball on the hand's origin, where it
+    # grabs, the bar back from it. See-through: a hand is where things are held, and
+    # a solid hand hides what it holds
+    "left": PartShape(SPHERE_TYPE, (0.03, 0.03, 0.03), opacity=HAND_OPACITY,
+                      bar=(0.1, 0.015, 0.015)),
+    "right": PartShape(SPHERE_TYPE, (0.03, 0.03, 0.03), opacity=HAND_OPACITY,
+                       bar=(0.1, 0.015, 0.015)),
 }
 """
 The parts a viewer may publish, and what each is drawn as.
@@ -242,9 +269,32 @@ def _message(
             ),
         ),
         scale=SimpleNamespace(x=drawn.scale[0], y=drawn.scale[1], z=drawn.scale[2]),
-        color=SimpleNamespace(r=red, g=green, b=blue, a=AVATAR_OPACITY),
+        color=SimpleNamespace(r=red, g=green, b=blue, a=drawn.opacity),
         points=[],
         text="",
+    )
+
+
+BAR_SUFFIX = "_bar"
+"""What a part's bar is named by, after the part's own name, for its marker id."""
+
+
+def _bar_message(identifier: int, pose: "PartPose", hex_color: str) -> SimpleNamespace:
+    """The bar behind a part (:attr:`PartShape.bar`), as a cube marker of its own:
+    turned as the part is, and set back along the part's -X to start at its shape."""
+    length = pose.shape.bar[0]
+    back = pose.shape.scale[0] / 2 + length / 2
+    x, y, z, w = pose.quaternion
+    # the part's +X in the world: the first column of its rotation
+    forward = (1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w))
+    position = [pose.position[i] - back * forward[i] for i in range(3)]
+    return _message(
+        identifier,
+        PartShape(CUBE_TYPE, pose.shape.bar, opacity=pose.shape.opacity),
+        hex_color,
+        position,
+        list(pose.quaternion),
+        ADD_ACTION,
     )
 
 
@@ -553,6 +603,9 @@ def observe_avatar(bridge: Bridge, payload: Any) -> Tuple[Dict[str, Any], int]:
         # never has to know its own name to be labelled with it
         head = next((pose for pose in poses if pose.name == "head"), None)
         identifiers = [pose.identifier for pose in poses]
+        identifiers += [
+            marker_id(viewer, pose.name + BAR_SUFFIX) for pose in poses if pose.shape.bar
+        ]
         if head is not None:
             identifiers.append(marker_id(viewer, LABEL_PART))
         # the roster is only told once every part has been read, so a post that turns
@@ -564,6 +617,11 @@ def observe_avatar(bridge: Bridge, payload: Any) -> Tuple[Dict[str, Any], int]:
                 pose.position, pose.quaternion, ADD_ACTION,
             )
             for pose in poses
+        )
+        messages.extend(
+            _bar_message(marker_id(viewer, pose.name + BAR_SUFFIX), pose, identity.color)
+            for pose in poses
+            if pose.shape.bar
         )
         if head is not None:
             messages.append(
@@ -578,6 +636,7 @@ def observe_avatar(bridge: Bridge, payload: Any) -> Tuple[Dict[str, Any], int]:
                 "quaternion": list(pose.quaternion),
                 "grab": bool(part.get("grab")),
                 "scale": list(pose.shape.scale),
+                "bar": list(pose.shape.bar) if pose.shape.bar else None,
                 "color": identity.color,
             }
             for pose, part in zip(poses, parts)

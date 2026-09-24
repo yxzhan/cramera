@@ -86,12 +86,23 @@
     return ring;
   }
 
-  //: A small block standing in for the controller in the user's hand.
+  //: What stands in for a controller in the user's hand: a ball on the end of a bar.
+  //: The ball is on the hand's own origin -- the point everything the hand does is
+  //: measured from, what it reaches for and takes hold of -- and the bar runs back
+  //: from it (+Z; the hand points down -Z), so where it grabs reads at a glance.
+  //: See-through, so whatever the hand is holding -- a marker's fingers above all --
+  //: stays in view. Shared with the walking viewer's hand.
   function handBlock() {
-    return new THREE.Mesh(
-      new THREE.BoxGeometry(0.045, 0.035, 0.12),
-      new THREE.MeshStandardMaterial({ color: 0x2a3340, roughness: 0.6, metalness: 0.1 })
-    );
+    const material = new THREE.MeshStandardMaterial({
+      color: 0x2a3340, roughness: 0.6, metalness: 0.1,
+      transparent: true, opacity: 0.3, depthWrite: false,
+    });
+    const hand = new THREE.Group();
+    hand.add(new THREE.Mesh(new THREE.SphereGeometry(0.015, 16, 12), material));
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(0.015, 0.015, 0.1), material);
+    bar.position.z = 0.015 + 0.05;
+    hand.add(bar);
+    return hand;
   }
 
   //: Install VR mode on a mounted 3D scene.
@@ -345,5 +356,6 @@
     SESSION_MODE: SESSION_MODE,
     supported: supported,
     install: install,
+    handBlock: handBlock,
   };
 })(window);

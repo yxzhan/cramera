@@ -1456,13 +1456,18 @@ Panels.define('robot-scene', function (root, bus) {
     if (!g) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    // shut if it is more open than not, else open; unknown counts as open, which is
-    // where a teleop marker starts
+    toggleGrip(g);
+  }, { capture: true });
+
+  //: Open fingers that are shut, shut fingers that are open. Unknown counts as open,
+  //: which is where a teleop marker starts. Shared by a right-click on the fingers, a
+  //: walking hand's right button and a headset's grip button.
+  function toggleGrip(g) {
     const from = gripAt[g.joint] !== undefined ? gripAt[g.joint] : g.upper;
     const to = from > (g.lower + g.upper) / 2 ? g.lower : g.upper;
     gripAt[g.joint] = to;
     postJoint(g.joint, to, true);
-  }, { capture: true });
+  }
   renderer.domElement.addEventListener('contextmenu', function (e) {
     if (gripUnder(e)) e.preventDefault();      // no browser menu over the fingers
   }, { capture: true });
@@ -2348,9 +2353,9 @@ Panels.define('robot-scene', function (root, bus) {
   // demo takes or refuses a VR grab exactly as it would a drag.
   const vrGrab = (function () {
     //: how close a VR controller has to be to an object's bounds to take it, in metres:
-    //: all but touching, so reaching past a marker for what is behind it does not
-    //: take the marker instead
-    const GRAB_RADIUS = 0.01;
+    //: touching, so reaching past a marker for what is behind it does not take the
+    //: marker instead
+    const GRAB_RADIUS = 0.005;
     //: how often a carried object's pose is posted at most, in ms
     const GRAB_POST_MS = 33;
     // Every hand that can grab, by id: the headset's two controllers ('0', '1') and the
@@ -2374,8 +2379,10 @@ Panels.define('robot-scene', function (root, bus) {
       for (const n in objectMeshes) {
         const g = objectMeshes[n], key = grabbableKey(n);
         // only what the viewer owns -- a marker, not a physical object: those belong
-        // to the sim, which a ghost grab (below) moves by physics instead
-        if (!key || !floatingKeys[key] || !g.visible || holds(key)) continue;
+        // to the sim, which a ghost grab (below) moves by physics instead -- and by
+        // its own body, not by what hangs off it: a marker is taken by the T it is
+        // drawn as, towards the wrist, not by its fingers out at the tips
+        if (!key || key !== n || !floatingKeys[key] || !g.visible || holds(key)) continue;
         const distance = _box.setFromObject(g).distanceToPoint(_at);
         if (distance <= bestDistance) { best = key; bestDistance = distance; }
       }
@@ -2387,17 +2394,17 @@ Panels.define('robot-scene', function (root, bus) {
       return false;
     }
 
-    //: While a hand holds something with fingers -- a teleop marker -- its grip closes
-    //: them: released is wide open, pressed all the way is shut.
+    //: While a hand holds something with fingers -- a teleop marker -- each press of
+    //: its grip opens them if they are shut and shuts them if they are open. A toggle,
+    //: not a squeeze followed continuously: one command per press, which the demo sends
+    //: straight to the hand, rather than a stream of opening values to chase.
     function squeeze(id, grip) {
       const entry = objectCatalog[grip.key];
       const value = hands[id].squeeze();
       if (!entry || !entry.grip || value === null) return;
-      const position = entry.grip.upper - value * (entry.grip.upper - entry.grip.lower);
-      if (grip.gripPosted !== undefined && Math.abs(position - grip.gripPosted)
-        < 0.01 * Math.abs(entry.grip.upper - entry.grip.lower)) return;
-      grip.gripPosted = position;
-      postJoint(entry.grip.joint, position, false);
+      const pressed = value >= 0.5;
+      if (pressed && !grip.squeezed) toggleGrip(entry.grip);
+      grip.squeezed = pressed;
     }
 
     function post(key, g, final) {
@@ -2565,7 +2572,7 @@ Panels.define('robot-scene', function (root, bus) {
     //: how close it has to be to an object's bounds to take it, in metres. More than
     //: a controller's centimetre: a hand steered by walking and looking lines up less
     //: finely than one held
-    const FPS_GRAB_RADIUS = 0.03;
+    const FPS_GRAB_RADIUS = 0.015;
     //: where it sits relative to the eye, in metres: a little right of and below the
     //: centre of the view, so what it reaches for is what the viewer looks at, and how
     //: far out -- starting an arm's length in front of the head
@@ -2576,10 +2583,9 @@ Panels.define('robot-scene', function (root, bus) {
     //: pointing dead ahead -- so what it holds, a marker, turns with it the same way
     const TILT = new THREE.Euler(Math.PI / 4, Math.PI / 4, Math.PI / 4, 'XYZ');
     const object = new THREE.Group();          // -Z forward, like a controller grip
-    object.add(new THREE.Mesh(
-      new THREE.BoxGeometry(0.045, 0.035, 0.12),
-      new THREE.MeshStandardMaterial({ color: 0x2a3340, roughness: 0.6, metalness: 0.1 })
-    ));
+    // drawn as a headset's controller is: the ball on the hand's origin, where it
+    // grabs, and a bar back from it
+    object.add(VRMode.handBlock());
     object.visible = false;
     object.rotation.copy(TILT);
     camera.add(object);
@@ -2653,8 +2659,8 @@ Panels.define('robot-scene', function (root, bus) {
       }
       const hint = $('walk-hint');
       if (walking && hint && !FpsMode.touchFirst()) {
-        hint.textContent += ' · click to lock, then: left button grabs, right button closes'
-          + ' the claw, wheel reaches';
+        hint.textContent += ' · click to lock, then: left button grabs, right button opens'
+          + ' / shuts the claw, wheel reaches';
       }
     }
 
