@@ -1,0 +1,116 @@
+{
+  "units": "metres",
+  "upAxis": "Z",
+  "workSurface": {
+    "height": 0.9,
+    "bounds": [
+      -0.9,
+      0.9,
+      -0.375,
+      0.375
+    ]
+  },
+  "rack": {
+    "origin": [
+      0.22,
+      -0.04,
+      0.9
+    ],
+    "holeRadius": 0.0115,
+    "collisionAperture": "square approximation",
+    "slots": [
+      {
+        "id": "A1",
+        "pose": [
+          0.16,
+          -0.065,
+          0.906,
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      {
+        "id": "A2",
+        "pose": [
+          0.22,
+          -0.065,
+          0.906,
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      {
+        "id": "A3",
+        "pose": [
+          0.28,
+          -0.065,
+          0.906,
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      {
+        "id": "B1",
+        "pose": [
+          0.16,
+          -0.015,
+          0.906,
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      {
+        "id": "B2",
+        "pose": [
+          0.22,
+          -0.015,
+          0.906,
+          0,
+          0,
+          0,
+          1
+        ]
+      },
+      {
+        "id": "B3",
+        "pose": [
+          0.28,
+          -0.015,
+          0.906,
+          0,
+          0,
+          0,
+          1
+        ]
+      }
+    ]
+  },
+  "tube": {
+    "height": 0.15,
+    "outerRadius": 0.009,
+    "innerRadius": 0.0078,
+    "graspHeight": 0.105,
+    "insertionAxis": [
+      0,
+      0,
+      -1
+    ],
+    "massKilograms": 0.012
+  },
+  "physics": {
+    "inertia": "estimated bounding boxes",
+    "contactValidation": "not yet performed",
+    "fluidModel": "separate visual fill bodies",
+    "dynamicRequiresConvexDecomposition": true,
+    "collisionGeometry": "Compound wall boxes with a concave rounded-bottom shell derived from the glass profile; dynamic contact is not validated."
+  },
+  "stateScope": "Manual workbench state is local to the browser; no live robot or semantic backend is connected."
+}

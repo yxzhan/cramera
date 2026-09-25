@@ -20,6 +20,7 @@
   const SCENE_ONLY_CLASS = 'scene-only';
   //: class on the root element of the window the scene was popped out into
   const POPPED_OUT_CLASS = 'popped-out';
+  const TOUR_CLASS = 'tour-viewer';
   const LAYOUT_SCENE_PATTERN = new RegExp('[?&]layout=' + LAYOUT_SCENE + '(&|$)');
   //: the viewer page a pop-out window opens
   const VIEWER_PAGE = 'index.html';
@@ -78,7 +79,18 @@
   //: whether the page shows the 3D scene alone; ``framed`` says the page sits in an iframe
   function sceneOnly(framed) {
     if (poppedOut()) return true;
+    if (tour()) return false;
     return framed && /[?&](replay=|scene(\b|=))/.test(window.location.search);
+  }
+
+  /** Whether this viewer deliberately uses only its saved local recording. */
+  function offline() {
+    return /[?&]offline=1(&|$)/.test(window.location.search);
+  }
+
+  /** Whether the viewer is embedded in the guided presentation. */
+  function tour() {
+    return /[?&]tour=1(&|$)/.test(window.location.search);
   }
 
   //: the url that opens a scene alone in a window of its own
@@ -94,9 +106,12 @@
     LAYOUT_SCENE: LAYOUT_SCENE,
     SCENE_ONLY_CLASS: SCENE_ONLY_CLASS,
     POPPED_OUT_CLASS: POPPED_OUT_CLASS,
+    TOUR_CLASS: TOUR_CLASS,
     name: name,
     url: url,
     liveUrl: liveUrl,
+    offline: offline,
+    tour: tour,
     withScene: withScene,
     sceneOnly: sceneOnly,
     poppedOut: poppedOut,

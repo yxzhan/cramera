@@ -42,12 +42,23 @@ import sys
 import threading
 import traceback
 import webbrowser
+from argparse import ArgumentParser
 from dataclasses import dataclass
+from http import HTTPMethod, HTTPStatus
 from pathlib import Path
 from typing_extensions import Any, Callable, ClassVar, Dict, List, Optional
 from urllib.parse import parse_qs, urlparse
 
 from cramera import paths
+from cramera.laboratory_physics_session import (
+    InvalidPhysicsRequest,
+    LaboratoryPhysicsSession,
+    PhysicsField,
+    PhysicsRoute,
+    PhysicsSessionInactive,
+)
+from cramera.laboratory_runs import LaboratoryRoute, LaboratoryRun, RunField
+from cramera.laboratory_robot_session import LaboratoryRobotSession, RobotPhysicsRoute
 from cramera.live.frame_range import FrameRange, InvalidFrameRange
 from cramera.live.recording_storage import (
     NoSavedRecording,
@@ -76,9 +87,11 @@ DEFAULT_PORT = 8711
 try:
     import krrood  # noqa: F401  (the EQL engine)
 
+    from cramera.model_catalog import ModelCatalog
     from cramera.knowledge.eql_session import EqlSession
     from cramera.knowledge.knowledge_base import EpisodeKnowledgeBase
     from cramera.knowledge.presets import Preset
+    from cramera.knowledge.scene_bundle import SceneBundle
     from cramera.knowledge.question_matching import QuestionMatcher
     from cramera.knowledge.views.dispatcher import GraphPanelViews
 
@@ -97,6 +110,41 @@ _EQL_LOCK = threading.Lock()
 """
 Krrood's SymbolGraph singleton is not threadsafe; queries are serialized.
 """
+
+
+@dataclass(init=False, repr=False, eq=False)
+class LaboratoryServer(socketserver.ThreadingTCPServer):
+    """Own the fixed laboratory child independently of individual HTTP requests."""
+
+    laboratory_run: LaboratoryRun
+    """The single laboratory execution supervised by this viewer server."""
+    laboratory_physics: LaboratoryPhysicsSession
+    """The isolated contact laboratory and its simulation worker."""
+    laboratory_robot_physics: LaboratoryRobotSession
+    """The PR2 and laboratory in a shared contact simulation."""
+
+    def __init__(
+        self,
+        address: tuple[str, int],
+        handler: type[http.server.BaseHTTPRequestHandler],
+    ) -> None:
+        """Initialize the localhost listener and its laboratory execution state."""
+        self.laboratory_run = LaboratoryRun(paths.data_directory())
+        self.laboratory_physics = LaboratoryPhysicsSession(paths.data_directory())
+        self.laboratory_robot_physics = LaboratoryRobotSession(paths.data_directory())
+        super().__init__(address, handler)
+
+    def shutdown(self) -> None:
+        """Stop accepting requests and terminate the owned contact simulation."""
+        super().shutdown()
+        self.laboratory_physics.stop()
+        self.laboratory_robot_physics.stop()
+
+    def server_close(self) -> None:
+        """Close request threads and release the contact simulation worker."""
+        super().server_close()
+        self.laboratory_physics.stop()
+        self.laboratory_robot_physics.stop()
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -130,12 +178,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         super().end_headers()
 
+    def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
+        """Keep routine physics polls quiet while retaining other access logs."""
+        if (
+            self.command == HTTPMethod.GET
+            and self.path.split("?")[0] in (PhysicsRoute.STATE, RobotPhysicsRoute.STATE)
+            and str(code) == str(HTTPStatus.OK.value)
+        ):
+            return
+        super().log_request(code, size)
+
     def log_message(self, format: str, *args) -> None:
         """
         Route the per-request access log through logging.
 
-        The page polls for the live scene while no demo runs; those misses would
-        flood the console every second and are not news, so they stay out of the log.
+        The page polls for the live scene while no demo runs; those misses would flood
+        the console every second and are not news, so they stay out of the log.
 
         :param format:``printf``-style log message format.
         :param args: Values to interpolate into ``format``.
@@ -173,13 +231,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _requested_scene(self) -> Optional[str]:
         """
-        The scene the request targets, or None to let the server pick the active one.
+        The requested scene, or the active recording available in the viewer's index.
 
         The frontend switches scenes by reloading with a ``?scene=`` parameter, so every
         API route has to honour it or the panels would disagree about what is on screen.
         """
         requested = self._query_parameters().get("scene")
-        return requested[0] if requested else None
+        return (
+            requested[0] if requested else SceneBundle.active_name(merged_scene_index())
+        )
 
     def _guarded(self, handler: Callable[[], Any]) -> None:
         """
@@ -242,9 +302,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         Route static files, scene bundles and the read-only API.
         """
         route = self.path.split("?")[0]
+        if route == PhysicsRoute.STATE:
+            return self._laboratory_physics_status()
+        if route == RobotPhysicsRoute.STATE:
+            return self._laboratory_physics_status(robot=True)
+        if route == LaboratoryRoute.STATUS:
+            return self._laboratory_status()
         if route.startswith("/scenes/"):
             return self._serve_scene_file(route)
-        scene = self._requested_scene()
+        scene = (
+            self._requested_scene()
+            if EQL_AVAILABLE and route.startswith(("/api/knowledge", "/api/eql"))
+            else None
+        )
         if route == "/api/knowledge":
             return self._guarded(
                 lambda: GraphPanelViews.of_scene(scene).for_tab("knowledge")
@@ -275,6 +345,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._send_json(
                 {"state": "finalized" if has_saveable_recording() else "idle"}
             )
+        if route == "/api/plan/catalog":
+            return self._guarded(lambda: ModelCatalog.installed())
         if route == "/api/plan/scaffold/log":
             return self._scaffold_log()
         if route == "/api/session/token":
@@ -300,6 +372,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         workbench.
         """
         route = self.path.split("?")[0]
+        if route in PhysicsRoute and route != PhysicsRoute.STATE:
+            return self._laboratory_physics_request(PhysicsRoute(route))
+        if route in RobotPhysicsRoute and route != RobotPhysicsRoute.STATE:
+            return self._laboratory_physics_request(RobotPhysicsRoute(route))
+        if route == LaboratoryRoute.START:
+            return self._start_laboratory()
         if route == "/api/eql":
             return self._run_eql()
         if route == "/api/question":
@@ -318,10 +396,139 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._stop_scaffold()
         return self._send_error("unknown endpoint", 404)
 
+    # %% contact laboratory
+    def _laboratory_physics_status(self, robot: bool = False) -> None:
+        """Read contact state without attaching to the robot live bridge."""
+        if not isinstance(self.server, LaboratoryServer):
+            return self._send_error("Laboratory physics is unavailable", 503)
+        session = (
+            self.server.laboratory_robot_physics
+            if robot
+            else self.server.laboratory_physics
+        )
+        self._send_json(session.status())
+
+    def _laboratory_physics_request(
+        self, route: PhysicsRoute | RobotPhysicsRoute
+    ) -> None:
+        """Accept bounded same-origin manipulation of the authored laboratory."""
+        if not isinstance(self.server, LaboratoryServer):
+            return self._send_error("Laboratory physics is unavailable", 503)
+        session = (
+            self.server.laboratory_robot_physics
+            if isinstance(route, RobotPhysicsRoute)
+            else self.server.laboratory_physics
+        )
+        routes = type(route)
+        expected_origins = {
+            "http://%s:%d" % (host, self.server.server_address[1])
+            for host in ("localhost", "127.0.0.1")
+        }
+        origin = self.headers.get("Origin")
+        if (origin is not None and origin not in expected_origins) or self.headers.get(
+            "Sec-Fetch-Site"
+        ) == "cross-site":
+            return self._send_error("A same-origin request is required", 403)
+        try:
+            body = self._request_body()
+            if not isinstance(body, dict):
+                raise InvalidPhysicsRequest("Expected a JSON object")
+            if route == routes.TARGET:
+                if set(body) not in (
+                    {PhysicsField.KEY, PhysicsField.POSITION},
+                    {PhysicsField.KEY, PhysicsField.POSITION, PhysicsField.ORIENTATION},
+                ):
+                    raise InvalidPhysicsRequest(
+                        "Expected an object key and target position"
+                    )
+                outcome = session.set_target(
+                    body[PhysicsField.KEY],
+                    body[PhysicsField.POSITION],
+                    orientation=body.get(PhysicsField.ORIENTATION),
+                )
+            elif route == routes.LIQUID:
+                if set(body) != {PhysicsField.KEY, PhysicsField.VOLUME_ML}:
+                    raise InvalidPhysicsRequest(
+                        "Expected an object key and liquid volume"
+                    )
+                outcome = session.fill_liquid(
+                    body[PhysicsField.KEY], body[PhysicsField.VOLUME_ML]
+                )
+            else:
+                if body != {}:
+                    raise InvalidPhysicsRequest("This operation accepts no parameters")
+                operations = {
+                    routes.START: session.start,
+                    routes.RELEASE: session.release,
+                    routes.RESET: session.reset,
+                    routes.STOP: session.stop,
+                    routes.SCALE_TARE: session.tare_scale,
+                }
+                if isinstance(session, LaboratoryRobotSession):
+                    operations.update(
+                        {
+                            RobotPhysicsRoute.RUN: session.run_program,
+                            RobotPhysicsRoute.MIX: session.run_mixing,
+                            RobotPhysicsRoute.PAUSE: session.pause_program,
+                        }
+                    )
+                outcome = operations[route]()
+        except PhysicsSessionInactive as error:
+            return self._send_error(str(error), 409)
+        except (ValueError, json.JSONDecodeError) as error:
+            return self._send_error(str(error), 400)
+        self._send_json(
+            outcome,
+            (
+                HTTPStatus.INTERNAL_SERVER_ERROR
+                if not outcome[PhysicsField.OK]
+                else (HTTPStatus.ACCEPTED if route == routes.START else HTTPStatus.OK)
+            ),
+        )
+
+    # %% fixed laboratory execution
+    def _laboratory_status(self) -> None:
+        """Report the fixed local demo without requiring the knowledge engine."""
+        if not isinstance(self.server, LaboratoryServer):
+            return self._send_error("Laboratory execution is unavailable", 503)
+        self._send_json(self.server.laboratory_run.status())
+
+    def _start_laboratory(self) -> None:
+        """Accept same-origin requests to run the predetermined PR2 transfer."""
+        if not isinstance(self.server, LaboratoryServer):
+            return self._send_error("Laboratory execution is unavailable", 503)
+        expected_origins = {
+            "http://%s:%d" % (host, self.server.server_address[1])
+            for host in ("localhost", "127.0.0.1")
+        }
+        origin = self.headers.get("Origin")
+        if (origin is not None and origin not in expected_origins) or self.headers.get(
+            "Sec-Fetch-Site"
+        ) == "cross-site":
+            return self._send_error("A same-origin request is required", 403)
+        try:
+            body = self._request_body()
+        except (ValueError, json.JSONDecodeError):
+            return self._send_error("Expected an empty JSON object", 400)
+        if body != {}:
+            return self._send_error("This fixed demo accepts no parameters", 400)
+        outcome = self.server.laboratory_run.start()
+        self._send_json(
+            outcome,
+            (
+                HTTPStatus.ACCEPTED
+                if outcome[RunField.OK]
+                else HTTPStatus.INTERNAL_SERVER_ERROR
+            ),
+        )
+
     def _generated_demos_directory(self):
         """
-        Where the Plan Builder writes generated demos: ``coraplex/demos/coraplex_generated``
-        (overridable via ``CRAMERA_GENERATED_DEMOS``). Sits two levels under ``coraplex/`` so
+        Where the Plan Builder writes generated demos:
+        ``coraplex/demos/coraplex_generated`` (overridable via
+        ``CRAMERA_GENERATED_DEMOS``).
+
+        Sits two levels under ``coraplex/`` so
         the generated ``os.path.dirname(__file__)/../../resources/objects`` mesh paths resolve.
         """
         import os
@@ -335,7 +542,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             candidate = parent / "coraplex" / "demos"
             if candidate.is_dir():
                 return candidate / "coraplex_generated"
-        return here.parent / "generated_demos"  # fallback: never resolves meshes, but writes
+        return (
+            here.parent / "generated_demos"
+        )  # fallback: never resolves meshes, but writes
 
     _scaffold_proc = None  # class-level: the running Plan-Builder scaffold demo, if any
     _scaffold_log_path = None  # where that process's stdout+stderr are captured
@@ -343,8 +552,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _launch_scaffold(self) -> None:
         """
         Write a Plan-Builder scaffold demo (environment + objects, idle) and run it with
-        cramera-live so its live world comes up on the bridge (:8765). The user drags
-        objects in the Scene view; the builder captures their poses via /captured_objects.
+        cramera-live so its live world comes up on the bridge (:8765).
+
+        The user drags objects in the Scene view; the builder captures their poses via
+        /captured_objects.
         """
         import os
         import subprocess
@@ -359,7 +570,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             out_dir.mkdir(parents=True, exist_ok=True)
             path = out_dir / "_builder_scaffold.py"
             path.write_text(code)
-            repo = out_dir.parent.parent.parent  # coraplex_generated -> demos -> coraplex -> repo
+            repo = (
+                out_dir.parent.parent.parent
+            )  # coraplex_generated -> demos -> coraplex -> repo
             self._stop_scaffold(reply=False)
             env = dict(os.environ, CORAPLEX_VISUALIZATION="cramera")
             # capture stdout+stderr so the Plan Builder can show a traceback if the demo
@@ -373,8 +586,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             # module behind the `cramera-live` console script.
             type(self)._scaffold_proc = subprocess.Popen(
                 [sys.executable, "-m", "cramera.live.runner", str(path)],
-                cwd=str(repo), env=env,
-                stdout=log_file, stderr=subprocess.STDOUT,
+                cwd=str(repo),
+                env=env,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
                 start_new_session=True,  # own process group, so stop can kill children too
             )
         except (OSError, ValueError) as error:
@@ -399,12 +614,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 text = Path(log_path).read_text(errors="replace")[-8000:]
             except OSError:
                 text = ""
-        self._send_json({
-            "ok": True,
-            "alive": proc is not None and returncode is None,
-            "returncode": returncode,
-            "log": text,
-        })
+        self._send_json(
+            {
+                "ok": True,
+                "alive": proc is not None and returncode is None,
+                "returncode": returncode,
+                "log": text,
+            }
+        )
 
     def _stop_scaffold(self, reply: bool = True) -> None:
         """
@@ -461,9 +678,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def _save_recording(self) -> None:
         """
-        Promote the on-disk ``__recording__`` bundle to a permanent, locally saved
-        scene — independent of whether the demo process that made it is still running
-        (see :mod:`cramera.live.recording_storage`).
+        Promote the on-disk ``__recording__`` bundle to a permanent, locally saved scene
+        — independent of whether the demo process that made it is still running (see
+        :mod:`cramera.live.recording_storage`).
 
         An optional ``firstFrame``/``lastFrame`` pair cuts the run down to that
         inclusive range before it is saved.
@@ -614,7 +831,7 @@ def make_server(port: int = 0) -> socketserver.ThreadingTCPServer:
     :param port: Port to listen on, or 0 for an ephemeral port.
     """
     socketserver.TCPServer.allow_reuse_address = True
-    return socketserver.ThreadingTCPServer(("127.0.0.1", port), Handler)
+    return LaboratoryServer(("127.0.0.1", port), Handler)
 
 
 NO_BROWSER_FLAG = "--no-browser"
@@ -629,6 +846,11 @@ class ServerOptions:
     What the ``cramera`` command line asks for.
     """
 
+    MAX_PORT: ClassVar[int] = 65535
+    """
+    Largest TCP port accepted by the server.
+    """
+
     port: int = DEFAULT_PORT
     """
     Port the server listens on.
@@ -639,6 +861,35 @@ class ServerOptions:
     Whether the viewer page is opened in the default browser on start.
     """
 
+    @classmethod
+    def parse(cls, arguments: list[str]) -> ServerOptions:
+        """
+        Read viewer options and report invalid input with command-line usage.
+
+        :param arguments: Arguments without the executable name.
+        :return: Validated viewer options.
+        """
+        parser = ArgumentParser(
+            description="Serve the CRAMERA viewer and local recordings."
+        )
+        parser.add_argument(
+            "port",
+            nargs="?",
+            type=int,
+            default=DEFAULT_PORT,
+            help=f"HTTP port (default: {DEFAULT_PORT})",
+        )
+        parser.add_argument(
+            NO_BROWSER_FLAG,
+            dest="open_browser",
+            action="store_false",
+            help="Start without opening the browser",
+        )
+        options = parser.parse_args(arguments)
+        if not 0 <= options.port <= cls.MAX_PORT:
+            parser.error("port must be between 0 and 65535")
+        return cls(port=options.port, open_browser=options.open_browser)
+
 
 def parse_arguments(arguments: List[str]) -> ServerOptions:
     """
@@ -646,19 +897,16 @@ def parse_arguments(arguments: List[str]) -> ServerOptions:
 
     :param arguments: The command-line arguments, without the program name.
     """
-    open_browser = NO_BROWSER_FLAG not in arguments
-    ports = [argument for argument in arguments if argument != NO_BROWSER_FLAG]
-    port = int(ports[0]) if ports else DEFAULT_PORT
-    return ServerOptions(port=port, open_browser=open_browser)
+    return ServerOptions.parse(arguments)
 
 
 def main(arguments: Optional[List[str]] = None) -> None:
     """
     ``cramera`` — serve the viewer, the scenes and the JSON API.
 
-    Opens the viewer page in the default browser once the server is up; demos only
-    ever connect to it, so this is the one deliberate moment a page appears. Pass
-    ``--no-browser`` to skip it (a headless or remote server).
+    Opens the viewer page in the default browser once the server is up; demos only ever
+    connect to it, so this is the one deliberate moment a page appears. Pass ``--no-
+    browser`` to skip it (a headless or remote server).
 
     :param arguments: Command-line arguments, or None to use ``sys.argv``.
     """
@@ -668,8 +916,10 @@ def main(arguments: Optional[List[str]] = None) -> None:
     options = parse_arguments(sys.argv[1:] if arguments is None else arguments)
     port = options.port
     if EQL_AVAILABLE:  # build the knowledge base once, before the first query
-        EpisodeKnowledgeBase.of_active_scene()
+        EpisodeKnowledgeBase.of_scene(SceneBundle.active_name(merged_scene_index()))
     with make_server(port) as server:
+        if port == 0:
+            port = server.server_address[1]
         eql = "EQL ready (krrood)" if EQL_AVAILABLE else "EQL unavailable — static only"
         scenes = paths.scenes_directory()
         logger.info("cramera running at http://localhost:%d/ (%s)", port, eql)

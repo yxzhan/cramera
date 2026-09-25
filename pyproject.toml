@@ -32,8 +32,8 @@ where = ["src"]
 include = ["cramera*"]
 
 [tool.setuptools.package-data]
-# the web frontend ships with the package (all local assets, no CDN)
-cramera = ["web/**/*"]
+# The frontend and laboratory world ship with all local runtime assets.
+cramera = ["web/**/*", "resources/precision_lab/*", "resources/precision_lab/assets/*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "cramera._version.__version__" }

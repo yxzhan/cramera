@@ -17,10 +17,10 @@ from __future__ import annotations
 import json
 import shutil
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from typing_extensions import Any, Dict, List, Optional
+from typing_extensions import Any, Dict, Iterable, List, Optional
 
 from semantic_digital_twin.robots.robot_parts import AbstractRobot
 from semantic_digital_twin.world import World
@@ -28,12 +28,13 @@ from semantic_digital_twin.world_description.world_entity import Body
 
 from cramera import paths
 from cramera.generated_json import GeneratedJson
-from cramera.live.overlay import is_overlay_body
 from cramera.live.bridge import Bridge
-from cramera.mesh_format import MeshFormat
+from cramera.live.robot_models import RobotModels
+from cramera.robot_fields import RobotField
 from cramera.onboard.bundle_urdf import BundleReport
 from cramera.onboard.world_to_urdf import UrdfDocument
 from cramera.robot_parts import RobotPartAnnotation
+from cramera.world_objects import WorldObjects
 
 BUILD_LOCK = threading.Lock()
 """
@@ -79,12 +80,17 @@ class WorldModelsBundle:
     Every asset a model referenced but could not resolve, across all models.
     """
 
+    robots: List[Dict[str, Any]] = field(default_factory=list)
+    """Metadata for every articulated robot in the shared world."""
+
 
 def bundle_world_models(
     world: World,
     robot: Optional[AbstractRobot],
     output_directory: Path,
     mesh_subdirectory: str,
+    *,
+    overlay_bodies: Iterable[Body] | None = None,
 ) -> WorldModelsBundle:
     """
     Serialize a world's robot and environment bodies into URDF models on disk.
@@ -101,13 +107,32 @@ def bundle_world_models(
     :param output_directory: Directory the URDF and mesh files are written into.
     :param mesh_subdirectory: Directory the meshes nest under inside
         ``output_directory``.
+    :param overlay_bodies: Bodies rendered independently, including previously loose
+        objects now attached to the robot; inferred from the world when omitted.
     """
-    robot_bodies = _robot_bodies(world, robot)
+    excluded_bodies = set(
+        WorldObjects(world, robot).overlay_bodies()
+        if overlay_bodies is None
+        else overlay_bodies
+    )
+    robot_models = RobotModels(world, robot)
+    bodies_by_robot = [
+        (
+            annotation,
+            [
+                body
+                for body in _robot_bodies(world, annotation)
+                if body not in excluded_bodies
+            ],
+        )
+        for annotation in robot_models.robots()
+    ]
+    robot_body_set = {body for _, bodies in bodies_by_robot for body in bodies}
     models: List[Dict[str, Any]] = []
     environment_bodies = [
         body
         for body in world.bodies_topologically_sorted
-        if body not in set(robot_bodies) and not is_overlay_body(body)
+        if body not in robot_body_set and body not in excluded_bodies
     ]
     if environment_bodies:
         report = UrdfDocument.of_bodies(
@@ -117,20 +142,31 @@ def bundle_world_models(
             mesh_subdirectory,
         )
         models.append(_model_payload(report, is_robot=False))
-    if robot_bodies:
+    for annotation, robot_bodies in bodies_by_robot:
+        if not robot_bodies:
+            continue
         report = UrdfDocument.of_bodies(
             robot_bodies,
-            type(robot).__name__.lower(),
+            robot_models.model_name(annotation),
             str(output_directory),
             mesh_subdirectory,
-            identity_root=robot.root,
+            identity_root=annotation.root,
         )
-        models.append(_model_payload(report, is_robot=True))
+        model = _model_payload(report, is_robot=True)
+        model["prefix"] = RobotModels.identifier(annotation)
+        model[RobotField.IDENTIFIER] = RobotModels.identifier(annotation)
+        model[RobotField.POSE] = robot_models.root_poses()[
+            RobotModels.identifier(annotation)
+        ]
+        models.append(model)
     missing_assets = sorted(
         {missing for model in models for missing in model.pop("missing")}
     )
     return WorldModelsBundle(
-        models=models, robot=_robot_payload(robot), missing_assets=missing_assets
+        models=models,
+        robot=_robot_payload(robot),
+        missing_assets=missing_assets,
+        robots=[_robot_payload(annotation) for annotation in robot_models.robots()],
     )
 
 
@@ -179,12 +215,20 @@ def _write_bundle(bridge: Bridge, output_directory: Path, signature: str) -> str
         shutil.rmtree(output_directory)
     output_directory.mkdir(parents=True)
     geometry = bundle_world_models(
-        bridge.world, bridge.robot, output_directory, MESH_SUBDIRECTORY
+        bridge.world,
+        bridge.robot,
+        output_directory,
+        MESH_SUBDIRECTORY,
+        overlay_bodies=bridge.query_objects(),
     )
     scene = {
         "name": paths.LIVE_SCENE_NAME,
         "models": geometry.models,
         "robot": geometry.robot,
+        RobotField.ROBOTS: geometry.robots,
+        RobotField.ACTIVE_ROBOT: (
+            RobotModels.identifier(bridge.robot) if bridge.robot is not None else None
+        ),
         "objects": [],
         "segments": [],
         "missingAssets": geometry.missing_assets,
@@ -195,6 +239,8 @@ def _write_bundle(bridge: Bridge, output_directory: Path, signature: str) -> str
         # the bundle untouched instead of deleting files a viewer may be downloading
         "bundleSignature": signature,
     }
+    if bridge.presentation is not None:
+        bridge.presentation.apply_to_scene(scene)
     (output_directory / "scene.json").write_text(json.dumps(scene, indent=1))
     return paths.LIVE_SCENE_NAME
 
@@ -242,6 +288,12 @@ def _robot_payload(robot: Optional[AbstractRobot]) -> Optional[Dict[str, Any]]:
     part_annotations = RobotPartAnnotation.of_robot(robot)
     return {
         "name": type(robot).__name__.lower(),
+        RobotField.IDENTIFIER: RobotModels.identifier(robot),
+        RobotField.LABEL: (
+            robot.name.name
+            if isinstance(robot, AbstractRobot)
+            else type(robot).__name__
+        ),
         "prefix": root_name.split("/", 1)[0] if "/" in root_name else "",
         "baseBody": root_name.split("/", 1)[-1],
         "parts": {annotation.name: annotation.links for annotation in part_annotations},

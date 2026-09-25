@@ -16,7 +16,9 @@
  *
  * window.RobotView stays exported for the console and split-resize.
  * ==========================================================================*/
-Panels.define('robot-scene', function (root, bus) {
+Panels.define('robot-scene', function mountRobotScene(root, bus) {
+  const offlineMode = SceneContext.offline();
+  if (offlineMode) root.classList.add('offline-view');
   root.innerHTML =
     '<div class="panel-head">' +
     '  <h2>Semantic Digital Twin Scene</h2>' +
@@ -137,7 +139,44 @@ Panels.define('robot-scene', function (root, bus) {
   const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 200);
   camera.position.set(3, 2.4, 4);
 
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  let renderer;
+  try {
+    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  } catch (error) {
+    // Three.js reports unsupported or exhausted GPU contexts at this boundary.
+    if (!(error instanceof Error) ||
+        !/^Error creating WebGL context(?: with your selected attributes)?\.?$/.test(error.message)) {
+      throw error;
+    }
+    console.warn('[cramera] 3D renderer unavailable:', error);
+    const laboratoryControls = SceneContext.name() === 'precision_lab';
+    root.innerHTML =
+      '<div class="panel-head"><h2>Semantic Digital Twin Scene</h2></div>' +
+      '<div class="panel-error">' +
+      '  <div role="alert"><h3>3D view unavailable</h3>' +
+      '    <p>This browser could not create a WebGL context.</p>' +
+      '    <p>Close other 3D tabs and retry, or copy the scene link below into a browser with WebGL support.</p>' +
+      '    <p>Your Builder plan and object settings are kept.</p>' +
+      '  </div>' +
+      '  <button id="scene-retry" class="play-btn" type="button">Retry scene</button> ' +
+      '  <a id="scene-open-browser" class="play-btn" target="_blank" rel="noopener noreferrer">Open scene separately</a>' +
+      (laboratoryControls ? ' <a id="laboratory-pr2-controls" class="play-btn">PR2-Steuerung öffnen</a>' : '') +
+      '</div>';
+    $('scene-open-browser').href = window.location.href;
+    if (laboratoryControls) $('laboratory-pr2-controls').href = 'laboratory-pr2.html';
+    const retryButton = $('scene-retry');
+    let retriedPanel = null;
+    function retryScene() {
+      retriedPanel = mountRobotScene(root, bus);
+    }
+    retryButton.addEventListener('click', retryScene);
+    return {
+      destroy: function () {
+        retryButton.removeEventListener('click', retryScene);
+        if (retriedPanel) retriedPanel.destroy();
+      },
+    };
+  }
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -285,6 +324,10 @@ Panels.define('robot-scene', function (root, bus) {
   layFloorGrid(60, 60, 0, 0);
 
   const controls = new THREE.OrbitControls(camera, renderer.domElement);
+  const cameraController = new CameraFollow.Controller(controls);
+  //: fetch for the page's own server routes, resolved against the page's base so they
+  //: keep a proxy prefix (see SceneContext.url)
+  function pageFetch(route, options) { return window.fetch(SceneContext.url(route), options); }
   controls.enableDamping = true;
   controls.dampingFactor = 0.08;
   controls.minDistance = 1;
@@ -295,6 +338,8 @@ Panels.define('robot-scene', function (root, bus) {
   const worldRoot = new THREE.Group();
   const markerRoot = new THREE.Group();   // the CRAM debug-marker overlay (/markers)
   worldRoot.add(markerRoot);
+  const queryMarkerRoot = new THREE.Group();
+  worldRoot.add(queryMarkerRoot);
   const navTargetsRoot = new THREE.Group();   // Plan Builder Navigate goals (ground arrows)
   worldRoot.add(navTargetsRoot);
   worldRoot.rotation.x = -Math.PI / 2;
@@ -307,6 +352,9 @@ Panels.define('robot-scene', function (root, bus) {
   let SCENE = null;              // scene.json payload
   let sceneBase = null;          // static/scenes/<name>/
   let traj = null;
+  let laboratoryWorkbench = null;
+  let laboratoryPhysics = null;
+  let laboratoryRobotPhysicsEntry = null;
   const models = [];              // {name, prefix, robot, obj}
   let robotModel = null;          // the bundle's own robot entry
   const objectMeshes = {};       // mesh key ('milk.stl') -> THREE.Group
@@ -322,6 +370,7 @@ Panels.define('robot-scene', function (root, bus) {
 
   // add one draggable object to the scene (bundle load or live spawn). spec:
   // {id, key, color, meshUrl?, mtlUrl?, format?  |  box:[x,y,z]  |  shapes:[ShapeSpecs spec]}.
+  // Optional pose is [x,y,z,qx,qy,qz,qw]; preserveMaterials keeps authored shading.
   // Any mesh format the vendored loaders support (stl/obj/dae) works; unknown →
   // placeholder box. `shapes` is how the live bridge publishes an arbitrary world
   // body: every shape with its own local pose, dimensions and colour.
@@ -336,13 +385,17 @@ Panels.define('robot-scene', function (root, bus) {
       color: new THREE.Color(spec.color || '#cccccc'),
       roughness: 0.5, metalness: 0.05, envMapIntensity: 0.7,
     });
-    function place(content) {                  // content: Mesh or Object3D
+    function prepareContent(content) {
       content.traverse(function (c) {
         if (c.isMesh) {
+          if (spec.preserveMaterials === true) { AuthoredMaterials.prepareMesh(c); return; }
           c.castShadow = true; c.receiveShadow = true;
           if (spec.tame && c.material && c.material.emissive) c.material.emissive.setRGB(0, 0, 0);
         }
       });
+    }
+    function place(content) {                  // content: Mesh or Object3D
+      prepareContent(content);
       const g = new THREE.Group();
       g.add(content);
       const box = new THREE.Box3().setFromObject(content);
@@ -355,6 +408,8 @@ Panels.define('robot-scene', function (root, bus) {
       objectLabels[spec.key] = label;
       objectMeshes[spec.key] = g;
       delete objectPending[spec.key];
+      if (spec.pose) setPose(g, spec.pose, spec.pose, 0);
+      applyObjectFrame(spec.key, playhead);
       worldRoot.add(g);
       refreshFrameAxes();            // the new object is a frame of its own
       if (guidedKeys.has(spec.key)) arrowOver(spec.key, true);   // flag a staged object so it's easy to find
@@ -390,14 +445,17 @@ Panels.define('robot-scene', function (root, bus) {
     }
     function loadShapeMesh(shapeSpec, holder) {
       const material = shapeMaterial(shapeSpec);
-      const fail = function () {
-        holder.add(new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.05), material));
+      const attach = function (content3d) {
+        prepareContent(content3d);
+        holder.add(content3d);
         needsRender = true;
+      };
+      const fail = function () {
+        attach(new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.05), material));
       };
       const finish = function (content3d) {
         content3d.scale.set(shapeSpec.scale[0], shapeSpec.scale[1], shapeSpec.scale[2]);
-        holder.add(content3d);
-        needsRender = true;
+        attach(content3d);
       };
       if (shapeSpec.format === 'obj' && THREE.OBJLoader) {
         const manager = new THREE.LoadingManager();
@@ -529,7 +587,6 @@ Panels.define('robot-scene', function (root, bus) {
     spr.scale.set(cv.width * s, cv.height * s, 1);
     return spr;
   }
-  let linkToPart = {};           // link name -> part name (from robot.parts)
   const readyCbs = [];
   let finalized = false;
 
@@ -580,13 +637,8 @@ Panels.define('robot-scene', function (root, bus) {
     .then(function (r) { return r.ok ? r.json() : { default: null, scenes: [] }; })
     .catch(function () { return { default: null, scenes: [] }; })
     .then(function (index) {
-      const declared = index.scenes || [];
-      // the index's default is only usable when the bundle is actually there: the
-      // published cram-scenes index names one it does not ship, and asking for it
-      // gives a 404 instead of a scene
-      const shipped = declared.some(function (scene) { return scene.name === index.default; });
-      const name = SceneContext.name() || (shipped ? index.default : (declared[0] || {}).name) || null;
-      wireScenePickers(declared, name);
+      const name = new ScenePicker.Selection(index).resolve(SceneContext.name());
+      wireScenePickers(index.scenes || [], name);
       if (!name) {
         if (statusEl) statusEl.textContent = 'No scene found — run cramera-onboard first.';
         return;
@@ -596,6 +648,7 @@ Panels.define('robot-scene', function (root, bus) {
     })
     .catch(function (e) {
       if (statusEl) statusEl.textContent = 'Scene failed to load: ' + e;
+      bus.emit('scene:error', {message: 'Szene konnte nicht geladen werden: ' + e.message});
     });
 
   // header dropdowns: a robot and an environment jointly resolve to the one
@@ -646,7 +699,7 @@ Panels.define('robot-scene', function (root, bus) {
     const robots = ScenePicker.robots(scenes);
     if (robots.length < 2 && ScenePicker.environments(scenes, robots[0]).length < 2) return;
     const active = ScenePicker.describe(scenes, activeName) || {};
-    let robot = active.robot || robots[0];
+    let robot = active.robot ?? robots[0];
 
     function navigateTo(environment) {
       const target = ScenePicker.sceneFor(scenes, robot, environment || null);
@@ -670,16 +723,13 @@ Panels.define('robot-scene', function (root, bus) {
     SCENE = sc;
     playbackSpeedMultiplier = 1;
     if (statusEl) statusEl.textContent = 'Loading ' + sc.name + '…';
-    // robot part lookup (link -> part name)
-    linkToPart = {};
-    const parts = (sc.robot && sc.robot.parts) || {};
-    for (const part in parts) parts[part].forEach(function (l) { linkToPart[l] = part; });
-
     sc.models.forEach(function (m) {
       makeUrdfLoader().load(sceneBase + m.urdf, function (obj) {
-        const entry = { name: m.name, prefix: m.prefix || '', robot: !!m.robot, obj: obj };
+        const entry = { name: m.name, prefix: m.prefix || '', identifier: m.identifier, robot: !!m.robot,
+          preserveMaterials: m.preserveMaterials === true, obj: obj };
         models.push(entry);
-        if (m.robot) robotModel = entry;
+        robotModel = ModelPoses.primary(models, sc.robot);
+        if (m.pose) setPose(obj, m.pose, m.pose, 0);
         worldRoot.add(obj);
         refreshFrameAxes();          // every link of the model is a frame
         refreshJointControls();
@@ -690,6 +740,7 @@ Panels.define('robot-scene', function (root, bus) {
     (sc.objects || []).forEach(function (o) {
       addObject({
         id: o.id, key: o.key, color: o.color,
+        pose: o.pose, preserveMaterials: o.preserveMaterials === true,
         box: o.box || null,
         meshUrl: o.mesh ? sceneBase + o.mesh : null,
         mtlUrl: o.mtl ? sceneBase + o.mtl : null,
@@ -718,6 +769,9 @@ Panels.define('robot-scene', function (root, bus) {
     fetch(sceneBase + (SCENE.trajectory || 'trajectory.json'))
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) {
+        if (offlineMode && (!d || !Array.isArray(d.frames) || !d.frames.length)) {
+          throw new Error('Die Aufnahme enthält keine abspielbaren Frames.');
+        }
         traj = d;
         setupTransports();
         if (traj) applyFrame(0);
@@ -726,7 +780,12 @@ Panels.define('robot-scene', function (root, bus) {
         if (statusEl) statusEl.classList.add('hidden');
         readyCbs.forEach(function (cb) { cb(); });
         needsRender = true;
-      }).catch(function () {
+      }).catch(function (error) {
+        if (offlineMode) {
+          if (statusEl) { statusEl.textContent = error.message; statusEl.classList.remove('hidden'); }
+          bus.emit('scene:error', {message: error.message});
+          return;
+        }
         frameCamera();
         if (statusEl) statusEl.classList.add('hidden');
         readyCbs.forEach(function (cb) { cb(); });
@@ -781,6 +840,11 @@ Panels.define('robot-scene', function (root, bus) {
     stripImportedLights(entry.obj);
     entry.obj.traverse(function (c) {
       if (!c.isMesh || c.userData._tamed) return;
+      if (entry.preserveMaterials === true) {
+        AuthoredMaterials.prepareMesh(c);
+        c.userData._tamed = true;
+        return;
+      }
       c.castShadow = true; c.receiveShadow = true;
       const link = entry.robot ? '' : linkNameOf(c);
       const mats = Array.isArray(c.material) ? c.material : [c.material];
@@ -822,6 +886,22 @@ Panels.define('robot-scene', function (root, bus) {
     _q0.set(a[3], a[4], a[5], a[6]); _q1.set(b[3], b[4], b[5], b[6]);
     obj.quaternion.copy(_q0).slerp(_q1, t);
   }
+  // Apply the current object track even when its geometry finishes after playback
+  // has paused. Updating only that object leaves manually moved neighbours alone.
+  function applyObjectFrame(name, frame) {
+    if (!traj || !traj.objects || !objectMeshes[name]) return;
+    const first = Math.floor(frame), next = Math.min(first + 1, traj.frames.length - 1);
+    const current = traj.objects[first], following = traj.objects[next];
+    if (!current || !following || !current[name] || !following[name]) return;
+    const object = objectMeshes[name];
+    setPose(object, current[name], following[name], frame - first);
+    const offset = objOffsetAt(name, frame);
+    object.position.x += offset.x;
+    object.position.y += offset.y;
+    // A resting object keeps the height chosen by dragging until its next pick.
+    const delta = pickDeltas[name];
+    if (delta && delta.zAbs != null && restingBeforePick(name, frame)) object.position.z = delta.zAbs;
+  }
   function applyFrame(f) {
     if (!traj) return;
     const F = traj.frames, i0 = Math.floor(f), i1 = Math.min(i0 + 1, F.length - 1), t = f - i0;
@@ -836,23 +916,8 @@ Panels.define('robot-scene', function (root, bus) {
       const bo = baseOffsetAt(f);
       robotModel.obj.position.x += bo.x; robotModel.obj.position.y += bo.y;
     }
-    if (traj.objects) {
-      const o0 = traj.objects[i0], o1 = traj.objects[i1];
-      for (const name in objectMeshes) {
-        if (o0[name] && o1[name]) {
-          setPose(objectMeshes[name], o0[name], o1[name], t);
-          const oo = objOffsetAt(name, f);
-          objectMeshes[name].position.x += oo.x;
-          objectMeshes[name].position.y += oo.y;
-          // while the object is still resting (before its pick), hold the
-          // dragged surface height so it doesn't float / clip
-          const pd = pickDeltas[name];
-          if (pd && pd.zAbs != null && restingBeforePick(name, f)) {
-            objectMeshes[name].position.z = pd.zAbs;
-          }
-        }
-      }
-    }
+    if (traj.modelBases) ModelPoses.apply(models, traj.modelBases[i0], traj.modelBases[i1], t, setPose);
+    if (traj.objects) Object.keys(objectMeshes).forEach(function (name) { applyObjectFrame(name, f); });
     if (SCENE && SCENE.segments) {
       const seg = SCENE.segments.find(function (s) { return i0 >= s.start && i0 < s.end; });
       if (seg && seg.step !== lastStep) { lastStep = seg.step; stepCb(seg.step); }
@@ -1035,7 +1100,20 @@ Panels.define('robot-scene', function (root, bus) {
   // %% camera
   let follow = true;
   const _target = new THREE.Vector3(), _base = new THREE.Vector3();
+  function focusSceneCamera(position, target) {
+    worldRoot.updateMatrixWorld(true);
+    controls.minDistance = 0.08;
+    camera.position.copy(worldRoot.localToWorld(new THREE.Vector3(position[0], position[1], position[2])));
+    controls.target.copy(worldRoot.localToWorld(new THREE.Vector3(target[0], target[1], target[2])));
+    follow = false;
+    controls.update();
+    needsRender = true;
+  }
   function frameCamera() {
+    if (SCENE && SCENE.camera) {
+      focusSceneCamera(SCENE.camera.position, SCENE.camera.target);
+      return;
+    }
     if (!robotModel) return;
     // Framing means placing the orbiting camera, and while someone is inside the
     // scene the camera is not that: it is an offset inside their rig, so this would
@@ -1310,6 +1388,8 @@ Panels.define('robot-scene', function (root, bus) {
     if (playing) return;
     const p = pickDraggable(e);
     if (!p) return;
+    if (SCENE && SCENE.laboratory && p.name) return;
+    if (SCENE && SCENE.physics && (!laboratoryPhysics || !p.name || !laboratoryPhysics.controller.beginDrag(p.name))) return;
     if (liveOn && p.marker) return;    // the place marker has no meaning live
     if (p.name && guidedKeys.has(p.name)) { guidedKeys.delete(p.name); arrowOver(p.name, false); }  // grabbed -> stop guiding
     dragTarget = p; dragging = true;
@@ -1320,11 +1400,19 @@ Panels.define('robot-scene', function (root, bus) {
     p.group.getWorldPosition(dragStartWorld);
     // horizontal drag plane through the grabbed thing (world y-up)
     _dragPlane.setFromNormalAndCoplanarPoint(new THREE.Vector3(0, 1, 0), dragStartWorld);
+    if (laboratoryPhysics) {
+      const hit = surfacePointAt(e);
+      if (hit) {
+        worldRoot.worldToLocal(hit);
+        // Keep the grab offset: the visible glass surface sits above its root plane.
+        p.physicsOffset = {x: p.group.position.x - hit.x, y: p.group.position.y - hit.y};
+      }
+    }
     e.preventDefault();
-  });
+  }, { capture: true });
   renderer.domElement.addEventListener('pointermove', function (e) {
     if (!dragging) {
-      if (!playing && e.buttons === 0) {
+      if (!playing && e.buttons === 0 && !(SCENE && SCENE.laboratory)) {
         const over = pickDraggable(e);
         renderer.domElement.style.cursor = over ? 'grab' : '';
         mouseNearKey = over && over.name ? over.name : null;
@@ -1349,6 +1437,12 @@ Panels.define('robot-scene', function (root, bus) {
       const hit = surfacePointAt(e);             // world point on the drag plane
       if (hit) {
         worldRoot.worldToLocal(hit);             // map frame (z-up)
+        if (laboratoryPhysics) {
+          const offset = dragTarget.physicsOffset || {x: 0, y: 0};
+          laboratoryPhysics.controller.dragTo([hit.x + offset.x, hit.y + offset.y, hit.z]);
+          needsRender = true;
+          return;
+        }
         g.position.x = hit.x; g.position.y = hit.y;
         snapToSurface(g, key);                   // exact rest height for this object
         if (liveOn) {
@@ -1400,7 +1494,9 @@ Panels.define('robot-scene', function (root, bus) {
   });
   function endDrag() {
     if (!dragging) return;
-    if (liveOn && dragTarget && dragTarget.name) {
+    if (laboratoryPhysics && dragTarget && dragTarget.name) {
+      laboratoryPhysics.controller.release();
+    } else if (liveOn && dragTarget && dragTarget.name) {
       const g = objectMeshes[dragTarget.name];
       postLiveMove(dragTarget.name, g.position.x, g.position.y, g.position.z, true);
     }
@@ -1478,13 +1574,15 @@ Panels.define('robot-scene', function (root, bus) {
       if (o.userData.simMarker) return 'place_area';
       return objectIdByKey[o.userData.simObj] || null;
     }
-    if (robotModel) {
-      hits = dragRay.intersectObject(robotModel.obj, true);
+    const robotModels = models.filter(function (model) { return model.robot; });
+    if (robotModels.length) {
+      hits = dragRay.intersectObjects(robotModels.map(function (model) { return model.obj; }), true);
       for (let i = 0; i < hits.length; i++) {
         let o = hits[i].object;
         while (o && o !== scene3) {
           if (o.isURDFLink && o.name) {
-            return linkToPart[String(o.name)] || (SCENE.robot && SCENE.robot.name) || null;
+            const model = robotModels.find(function (entry) { return entry.obj.links && entry.obj.links[o.name] === o; });
+            if (model) return ModelPoses.partFor(SCENE, model, String(o.name)) || model.identifier || model.name;
           }
           o = o.parent;
         }
@@ -1541,6 +1639,7 @@ Panels.define('robot-scene', function (root, bus) {
     for (const key in objectMeshes) {
       const on = !!set[key] || !!set[objectIdByKey[key]];
       objectMeshes[key].traverse(function (c) {
+        if (c.isMesh && c.userData.preserveMaterials) { AuthoredMaterials.highlightMesh(c, on, 0.55); return; }
         if (c.isMesh && c.material && c.material.emissive) {
           c.material.emissive.setHex(on ? 0x39d5c8 : 0x000000);
           c.material.emissiveIntensity = on ? 0.55 : 0;
@@ -1554,7 +1653,7 @@ Panels.define('robot-scene', function (root, bus) {
     (ids || []).forEach(function (id) {
       id = String(id);
       if (id.indexOf('urdf:') === 0) linkSet[id.slice(5)] = 1;
-      const j = robotModel && robotModel.obj.joints && robotModel.obj.joints[id];
+      const j = JointRouting.jointFor(models, id);
       if (j) {
         for (let i = 0; i < j.children.length; i++) {
           if (j.children[i].isURDFLink) { linkSet[j.children[i].name] = 1; break; }
@@ -1563,14 +1662,12 @@ Panels.define('robot-scene', function (root, bus) {
     });
     // robot: glow meshes by part (scene.robot.parts, e.g. PR2LeftArm), by link,
     // or the whole robot when its own id is selected
-    if (robotModel) {
-      const robotName = SCENE && SCENE.robot && SCENE.robot.name;
-      const wholeRobot = !!(robotName && set[robotName]);
-      robotModel.obj.traverse(function (c) {
+    models.filter(function (model) { return model.robot; }).forEach(function (model) {
+      model.obj.traverse(function (c) {
         if (!c.isMesh) return;
         const link = linkNameOf(c);
-        const part = linkToPart[link];
-        const on = wholeRobot || !!(part && set[part]) || !!linkSet[link];
+        const on = ModelPoses.highlighted(SCENE, model, link, set) || !!linkSet[link];
+        if (c.userData.preserveMaterials) { AuthoredMaterials.highlightMesh(c, on, 0.45); return; }
         const mats = Array.isArray(c.material) ? c.material : [c.material];
         mats.forEach(function (m) {
           if (m && m.emissive) {
@@ -1579,7 +1676,7 @@ Panels.define('robot-scene', function (root, bus) {
           }
         });
       });
-    }
+    });
     // the place area: brighten the blue corner marker
     if (PLACE0) {
       const on = !!set['place_area'];
@@ -1624,6 +1721,9 @@ Panels.define('robot-scene', function (root, bus) {
     if (!final && now - lastMovePost < 100) return;
     lastMovePost = now;
     postLive('move', { object: key, position: [round3(x), round3(y), round3(z)], final: !!final });
+    if (final && window.parent && window.parent !== window) {
+      window.parent.postMessage({ type: 'cramera-object-settled', key: key, position: [round3(x), round3(y), round3(z)] }, '*');
+    }
   }
   //: Send a viewer request to the bridge: over the live socket when it is open, as a
   //: POST to the route of the same name otherwise.
@@ -1794,6 +1894,7 @@ Panels.define('robot-scene', function (root, bus) {
     return SceneContext.liveUrl();
   }
   function probeLive() {
+    if (offlineMode || (SCENE && SCENE.laboratory)) return;
     fetch(liveUrl() + '/info').then(function (r) { return r.json(); })
       .then(function (info) {
         if (liveBtn && !liveOn) liveBtn.style.display = info ? '' : 'none';
@@ -1920,13 +2021,21 @@ Panels.define('robot-scene', function (root, bus) {
     });
     needsRender = true;
   }
-  function clearMarkers() {
-    Object.keys(markerObjects).forEach(function (key) {
-      disposeMarker(markerObjects[key].object);
-      delete markerObjects[key];
-    });
-    // nothing else adds to markerRoot, but a stray would otherwise never be freed
-    while (markerRoot.children.length) disposeMarker(markerRoot.children[0]);
+  function clearMarkers(root = markerRoot) {
+    if (root === markerRoot) {
+      Object.keys(markerObjects).forEach(function (key) {
+        disposeMarker(markerObjects[key].object);
+        delete markerObjects[key];
+      });
+    }
+    while (root.children.length) {
+      const child = root.children[0];
+      root.remove(child);
+      child.traverse(function (c) {
+        if (c.geometry) c.geometry.dispose();
+        if (c.material) { c.material.map && c.material.map.dispose(); c.material.dispose(); }
+      });
+    }
   }
   function markerMaterial(spec) {
     return new THREE.MeshStandardMaterial({
@@ -2048,6 +2157,7 @@ Panels.define('robot-scene', function (root, bus) {
       applyFrameTriadSize(triad);
       frameTriads.push(triad);
     });
+    if (laboratoryWorkbench) laboratoryWorkbench.refresh();
     needsRender = true;
   }
 
@@ -2064,12 +2174,7 @@ Panels.define('robot-scene', function (root, bus) {
     if (robotModel && st.base) setPose(robotModel.obj, st.base, st.base, 0);
     // every bundled model root the bridge streams: a second robot drives, a moved
     // environment model follows (the primary robot's entry re-applies st.base)
-    const modelBases = st.modelBases || {};
-    for (const prefix in modelBases) {
-      models.forEach(function (m) {
-        if (m.prefix === prefix) setPose(m.obj, modelBases[prefix], modelBases[prefix], 0);
-      });
-    }
+    ModelPoses.apply(models, st.modelBases, null, 0, setPose);
     // over the socket the overlay arrives with the state that announces it
     if (typeof st.markersVersion === 'number' && st.markersVersion !== lastMarkersVersion) {
       lastMarkersVersion = st.markersVersion;
@@ -2078,7 +2183,7 @@ Panels.define('robot-scene', function (root, bus) {
     let unknown = false;
     liveStateKeys = st.objects || {};
     for (const key in liveStateKeys) {
-      if (key === liveDraggedKey) continue;    // the mouse owns this one right now
+      if (key === liveDraggedKey && !(SCENE && SCENE.physics)) continue;    // the mouse owns this one right now
       if (vrGrab.holds(key)) continue;         // so does a VR controller
       const owner = objectCatalog[key] && objectCatalog[key].attached_to;
       if (owner && liveStateKeys[owner]) {
@@ -2095,7 +2200,7 @@ Panels.define('robot-scene', function (root, bus) {
       } else unknown = true;                   // an object the demo spawned mid-run
     }
     if (unknown) syncLiveObjects();            // fetch the catalog & spawn the newcomers
-    if (follow && robotCenter(_target)) controls.target.lerp(_target, 0.08);
+    if (follow && robotCenter(_target)) cameraController.follow(_target, 0.08);
     needsRender = true;
   }
   let livePolls = 0;
@@ -2177,7 +2282,8 @@ Panels.define('robot-scene', function (root, bus) {
             objectMeshes[o.key].visible = true;
             return;
           }
-          const spec = { id: o.id, key: o.key, color: o.color };
+          const spec = { id: o.id, key: o.key, color: o.color,
+            preserveMaterials: o.preserveMaterials === true };
           if (o.kind === 'shapes' && o.shapes) { spec.shapes = o.shapes; spec.liveBase = liveUrl(); }
           else if (o.kind === 'mesh' && o.mesh) { spec.meshUrl = liveUrl() + o.mesh; spec.format = o.format; }
           else spec.box = o.size || [0.06, 0.06, 0.1];
@@ -2205,6 +2311,7 @@ Panels.define('robot-scene', function (root, bus) {
   // already there, toggles the plain pose overlay below exactly like any scene.
   var LIVE_SCENE_RETRY_MS = 1000;
   function goLiveOrAttach() {
+    if (offlineMode) return;
     if (LiveMode.actionFor(SceneContext.name()) === LiveMode.TOGGLE) {
       // detaching by hand must stick even with auto-live on — until this demo goes
       // away, after which the next run is fair game again
@@ -2282,8 +2389,8 @@ Panels.define('robot-scene', function (root, bus) {
     needsRender = true;
   }
   if (liveBtn) liveBtn.addEventListener('click', goLiveOrAttach);
-  const probeTimer = setInterval(probeLive, LIVE_PROBE_INTERVAL_MS);
-  probeLive();
+  const probeTimer = offlineMode ? null : setInterval(probeLive, LIVE_PROBE_INTERVAL_MS);
+  if (!offlineMode) probeLive();
 
   // %% SSAO
   let composer = null, ssaoPass = null;
@@ -2799,9 +2906,12 @@ Panels.define('robot-scene', function (root, bus) {
   });
 
   function renderFrame() {
+    const ambientOcclusion = !(SCENE && SCENE.rendering && SCENE.rendering.ambientOcclusion === false);
+    renderer.toneMappingExposure = SCENE && SCENE.rendering && Number.isFinite(SCENE.rendering.exposure)
+      ? SCENE.rendering.exposure : 0.95;
     // EffectComposer renders through its own targets, which are not the XR
     // framebuffer — SSAO is a desktop-only pass
-    if (composer && !renderer.xr.isPresenting) composer.render();
+    if (composer && ambientOcclusion && !renderer.xr.isPresenting) composer.render();
     else renderer.render(scene3, camera);
   }
 
@@ -2832,7 +2942,7 @@ Panels.define('robot-scene', function (root, bus) {
     // flag only gates its event handlers — so while a headset or a walking viewer
     // owns the camera it has to be left uncalled, not merely disabled
     const driven = inScene();
-    const moved = driven ? false : controls.update();
+    const moved = driven ? false : cameraController.update();
     if (renderer.xr.isPresenting) vr.update(delta);
     if (renderer.xr.isPresenting || fps.active()) vrGrab.update();
     fps.update(delta);
@@ -2842,7 +2952,7 @@ Panels.define('robot-scene', function (root, bus) {
       if (playhead >= traj.frames.length - 1) { playhead = traj.frames.length - 1; playing = false; stepCb('__done__'); }
       applyFrame(playhead);
       playheadCbs.forEach(function (cb) { cb(playhead); });
-      if (follow && robotCenter(_target)) controls.target.lerp(_target, 0.06);
+      if (follow && robotCenter(_target)) cameraController.follow(_target, 0.06);
       needsRender = true;
     }
     // a viewer inside the scene needs every frame — a headset to track the head, a
@@ -2939,12 +3049,157 @@ Panels.define('robot-scene', function (root, bus) {
   // event bus. The 3D code above knows nothing about other panels.
   const RobotView = window.RobotView;
 
+  // %% manual laboratory manipulation
+  function laboratoryAdapter() {
+    return {
+      isReady: function () {
+        return !liveOn && SCENE.objects.every(function (entry) { return !!objectMeshes[entry.key]; });
+      },
+      getPose: function (key) {
+        const object = objectMeshes[key];
+        return object ? object.position.toArray().concat(object.quaternion.toArray()) : null;
+      },
+      setPose: function (key, pose) {
+        const object = objectMeshes[key];
+        if (!object) return false;
+        setPose(object, pose, pose, 0);
+        needsRender = true;
+        return true;
+      },
+      setJoint: function (name, value) {
+        const joint = JointRouting.jointFor(models, name);
+        if (!joint) return false;
+        joint.setJointValue(value);
+        syncJointControls();
+        needsRender = true;
+        return true;
+      },
+      pause: stopTrajectory,
+      focus: focusSceneCamera,
+    };
+  }
+  // %% physical laboratory feedback
+  function laboratoryPhysicsAdapter() {
+    const feedback = new THREE.Group();
+    worldRoot.add(feedback);
+    const liquid = typeof LaboratoryLiquid === 'undefined' ? null
+      : LaboratoryLiquid.create(THREE, worldRoot, function (key) { return objectMeshes[key]; });
+    const scale = typeof LaboratoryScale === 'undefined' || !SCENE.physics.scale ? null
+      : LaboratoryScale.create(THREE, worldRoot, SCENE.physics.scale, root.ownerDocument);
+    const contactGeometry = new THREE.SphereGeometry(0.003, 10, 8);
+    const contactMaterial = new THREE.MeshBasicMaterial({color: 0xe34b35, depthTest: false});
+    const targetGeometry = new THREE.SphereGeometry(0.008, 16, 12);
+    const targetMaterial = new THREE.MeshBasicMaterial({color: 0xf1a52d, wireframe: true, depthTest: false});
+    const target = new THREE.Mesh(targetGeometry, targetMaterial);
+    target.renderOrder = 10;
+    target.visible = false;
+    feedback.add(target);
+    const dots = [];
+    return {
+      setJointFrames: function (frames) {
+        for (const [name, value] of Object.entries(frames)) {
+          const joint = JointRouting.jointFor(models, name);
+          if (joint) joint.setJointValue(value);
+        }
+        syncJointControls();
+        needsRender = true;
+      },
+      setObjectPose: function (key, pose) {
+        const object = objectMeshes[key];
+        if (!object) return;
+        setPose(object, pose, pose, 0);
+        needsRender = true;
+      },
+      setLiquidState: function (snapshot) {
+        if (liquid) liquid.update(snapshot);
+        needsRender = true;
+      },
+      setScaleState: function (snapshot) {
+        if (scale) scale.update(snapshot);
+        needsRender = true;
+      },
+      showContacts: function (contacts, desired) {
+        const visible = contacts.filter(function (contact) { return contact.force > 0; }).slice(0, 64);
+        while (dots.length < visible.length) {
+          const dot = new THREE.Mesh(contactGeometry, contactMaterial);
+          dot.renderOrder = 11;
+          dots.push(dot);
+          feedback.add(dot);
+        }
+        dots.forEach(function (dot, index) {
+          dot.visible = index < visible.length;
+          if (dot.visible) dot.position.fromArray(visible[index].position);
+        });
+        target.visible = !!desired;
+        if (desired) target.position.fromArray(desired.position);
+        needsRender = true;
+      },
+      focus: focusSceneCamera,
+      destroy: function () {
+        if (liquid) liquid.destroy();
+        if (scale) scale.destroy();
+        worldRoot.remove(feedback);
+        contactGeometry.dispose(); contactMaterial.dispose();
+        targetGeometry.dispose(); targetMaterial.dispose();
+      },
+    };
+  }
+  RobotView.onReady(function () {
+    if (SCENE.physics) {
+      if (laboratoryPhysics) return;
+      stopTrajectory();
+      const adapter = laboratoryPhysicsAdapter();
+      laboratoryPhysics = LaboratoryPhysics.mount(
+        root.querySelector('.stage'), SCENE.physics,
+        new LaboratoryPhysics.Client(pageFetch, SCENE.physics), adapter,
+      );
+      laboratoryPhysics.adapter = adapter;
+      if (!SCENE.physics.robot) {
+        laboratoryRobotPhysicsEntry = LaboratoryPhysics.mountStart(
+          root.querySelector('.laboratory-physics'),
+          new LaboratoryPhysics.Client(pageFetch, {robot: true}),
+          function (url) { window.location.assign(url); },
+        );
+      }
+      root.classList.add('laboratory-physics-scene');
+      root.querySelector('.panel-head h2').textContent = SCENE.physics.robot ? 'PR2 im Labor · Kontaktphysik' : 'Labor · Kontaktphysik';
+      root.querySelector('.stage-hint').textContent = SCENE.physics.robot ? 'PR2-Auftrag starten oder pausieren · Bewegung und Kontakte werden simuliert' : 'Glas ziehen: bewegen · Loslassen: fallen lassen · Laborsteuerung: anheben und absenken';
+      if (liveBtn) liveBtn.hidden = true;
+      if (playBtn) playBtn.disabled = true;
+      if (scrubber) scrubber.disabled = true;
+      if (speedSelect) speedSelect.disabled = true;
+      return;
+    }
+    if (!SCENE.laboratory || laboratoryWorkbench) return;
+    laboratoryWorkbench = LaboratoryWorkbench.mount(
+      root.querySelector('.stage'), SCENE.laboratory, laboratoryAdapter(),
+      function (host) {
+        const robot = LaboratoryRobot.mount(host, new LaboratoryRobot.Client(pageFetch));
+        const physics = LaboratoryPhysics.mountStart(host, new LaboratoryPhysics.Client(pageFetch), function (url) { window.location.assign(url); });
+        const robotPhysics = LaboratoryPhysics.mountStart(host, new LaboratoryPhysics.Client(pageFetch, {robot: true}), function (url) { window.location.assign(url); });
+        return {destroy: function () { robot.destroy(); physics.destroy(); robotPhysics.destroy(); }};
+      }
+    );
+    root.classList.add('laboratory-scene');
+    root.querySelector('.panel-head h2').textContent = 'Precision Laboratory';
+    root.querySelector('.stage-hint').textContent = 'Ziehen: Ansicht drehen · Scrollen: Zoom · Laborbank: Gläser und Stopfen bedienen';
+    if (laboratoryWorkbench) laboratoryWorkbench.refresh();
+  });
+
   // %% bus: outbound
   RobotView.onPartClick(function (id) { bus.emit('scene:part-clicked', { id: id }); });
   RobotView.onLiveChange(function (on) { bus.emit('live:changed', { on: on, url: liveUrl() }); });
 
   // %% bus: inbound
-  bus.on('entity:highlight', function (p) { highlightObjects((p && p.ids) || []); });
+  bus.on('entity:highlight', function (p) {
+    highlightObjects((p && p.ids) || []);
+    clearMarkers(queryMarkerRoot);
+    ((p && p.spatial) || []).forEach(function (marker) {
+      const built = buildMarker(marker);
+      if (built) queryMarkerRoot.add(built);
+    });
+    needsRender = true;
+  });
 
   // %% play button
   const playBtn = $('play-btn');
@@ -3116,6 +3371,7 @@ Panels.define('robot-scene', function (root, bus) {
   let recordedFrameRate = 0;
 
   function updateRecordingButtons() {
+    if (offlineMode) { recordBtn.style.display = 'none'; closeSavePanel(); return; }
     recordBtn.style.display =
       RecordingMode.controlsVisible({ state: recordingState }) ? '' : 'none';
     recordBtn.textContent = RecordingMode.controlLabel(recordingState);
@@ -3202,6 +3458,7 @@ Panels.define('robot-scene', function (root, bus) {
   }
 
   function pollRecordingStatus() {
+    if (offlineMode) return;
     fetch(liveUrl() + '/recording').then(function (r) { return r.json(); })
       .then(applyRecordingStatus)
       .catch(function () {
@@ -3211,8 +3468,8 @@ Panels.define('robot-scene', function (root, bus) {
       });
   }
   updateRecordingButtons();
-  const recordingProbeTimer = setInterval(pollRecordingStatus, LIVE_PROBE_INTERVAL_MS);
-  pollRecordingStatus();
+  const recordingProbeTimer = offlineMode ? null : setInterval(pollRecordingStatus, LIVE_PROBE_INTERVAL_MS);
+  if (!offlineMode) pollRecordingStatus();
 
   recordBtn.addEventListener('click', function () {
     if (RecordingMode.controlAction(recordingState) === RecordingMode.SAVE) {
@@ -3310,7 +3567,7 @@ Panels.define('robot-scene', function (root, bus) {
   const LAYERS_SECTION = 'layers';
   const layersPanelEl = $('layers-panel');
   const layersFoldEl = $('layers-fold');
-  let layersFolded = Folding.folded(window.localStorage, LAYERS_SECTION);
+  let layersFolded = SceneContext.tour() || Folding.folded(window.localStorage, LAYERS_SECTION);
 
   function showFold() {
     const face = Folding.button(layersFolded, 'the layers');
@@ -3322,7 +3579,7 @@ Panels.define('robot-scene', function (root, bus) {
   layersFoldEl.addEventListener('click', function (event) {
     event.preventDefault();
     layersFolded = !layersFolded;
-    Folding.remember(window.localStorage, LAYERS_SECTION, layersFolded);
+    if (!SceneContext.tour()) Folding.remember(window.localStorage, LAYERS_SECTION, layersFolded);
     showFold();
   });
 
@@ -3348,6 +3605,7 @@ Panels.define('robot-scene', function (root, bus) {
   });
 
   function renderMarkerSettings() {
+    if (offlineMode) return;
     fetch(liveUrl() + '/marker_topics').then(function (r) { return r.json(); })
       .then(function (settings) {
         markerSettingsEl.innerHTML = '';
@@ -3611,6 +3869,9 @@ Panels.define('robot-scene', function (root, bus) {
 
   return {
     destroy: function () {
+      if (laboratoryWorkbench) laboratoryWorkbench.destroy();
+      if (laboratoryRobotPhysicsEntry) laboratoryRobotPhysicsEntry.destroy();
+      if (laboratoryPhysics) { laboratoryPhysics.destroy(); laboratoryPhysics.adapter.destroy(); }
       running = false;
       renderer.setAnimationLoop(null);       // stops the render loop
       clearInterval(probeTimer);

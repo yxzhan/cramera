@@ -1,0 +1,19 @@
+/* %% native operation as a standalone page */
+.laboratory-pr2-controls {
+  box-sizing: border-box;
+  position: static;
+  width: 100%;
+  max-width: none;
+  max-height: none;
+  overflow: visible;
+  padding: 22px;
+  margin: 28px 0;
+  box-shadow: none;
+}
+.laboratory-pr2-controls .laboratory-robot { padding: 0; border-bottom: 0; gap: 13px; }
+.laboratory-pr2-controls .laboratory-robot-heading { font-size: 15px; }
+.laboratory-pr2-controls .laboratory-robot-start { min-height: 44px; font-size: 15px; }
+.laboratory-pr2-controls .laboratory-robot-status { margin: 0; font-size: 13px; }
+.laboratory-pr2-controls .laboratory-robot-note { margin: 0; font-size: 12px; }
+.laboratory-pr2-controls .laboratory-robot a { font-size: 13px; }
+.laboratory-pr2-controls .laboratory-robot-log { max-height: 280px; }

@@ -1,0 +1,100 @@
+/* %% workbench overlay */
+.laboratory-scene .workflow,
+.laboratory-scene #lp-joints,
+.laboratory-scene .pop-out,
+.laboratory-scene label:has(#lyr-auto-live),
+.laboratory-scene label:has(#lyr-follow) { display: none; }
+.laboratory-scene .stage-hint { right: 306px; }
+.laboratory-workbench {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 20;
+  width: 272px;
+  max-width: calc(100% - 32px);
+  max-height: calc(100% - 32px);
+  overflow: auto;
+  color: #e6f0f2;
+  background: rgba(17, 29, 35, .96);
+  border: 1px solid rgba(147, 192, 201, .28);
+  border-radius: 14px;
+  box-shadow: 0 14px 42px rgba(0, 0, 0, .3);
+  font: 12px/1.45 system-ui, sans-serif;
+  backdrop-filter: blur(14px);
+}
+.laboratory-workbench[hidden] { display: none; }
+.laboratory-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 14px;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+.laboratory-heading::-webkit-details-marker { display: none; }
+.laboratory-heading::after { content: '+'; margin-left: auto; color: #96b5bd; font-size: 18px; }
+.laboratory-workbench[open] .laboratory-heading::after { content: '−'; }
+.laboratory-title { font-size: 15px; font-weight: 650; letter-spacing: .01em; }
+.laboratory-mode {
+  padding: 2px 6px;
+  border: 1px solid #42656b;
+  border-radius: 5px;
+  color: #9bdcd8;
+  font-size: 10px;
+  letter-spacing: .04em;
+}
+.laboratory-body { display: grid; gap: 9px; padding: 0 14px 13px; }
+.laboratory-body p { margin: 0; }
+.laboratory-intro { color: #aebfc5; }
+.laboratory-field { display: grid; gap: 5px; color: #b8cbd1; font-size: 11px; }
+.laboratory-workbench select,
+.laboratory-workbench button {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 33px;
+  padding: 7px 9px;
+  border: 1px solid #3d555d;
+  border-radius: 6px;
+  background: #20333c;
+  color: #e6f0f2;
+  font: inherit;
+  text-align: left;
+}
+.laboratory-workbench select { color-scheme: dark; }
+.laboratory-workbench button { cursor: pointer; transition: background .12s ease; }
+.laboratory-workbench button:hover:not(:disabled) { background: #314c56; border-color: #759aa5; }
+.laboratory-workbench button:focus-visible,
+.laboratory-workbench select:focus-visible,
+.laboratory-workbench summary:focus-visible { outline: 2px solid #8fe3db; outline-offset: 2px; }
+.laboratory-workbench button:disabled,
+.laboratory-workbench select:disabled { cursor: default; opacity: .42; }
+.laboratory-workbench .laboratory-primary { background: #295750; border-color: #4a857b; }
+.laboratory-workbench .laboratory-primary:hover:not(:disabled) { background: #357266; }
+.laboratory-inventory { font-size: 10px; color: #9bb7c1; }
+.laboratory-status { color: #b6e4d6; font-size: 11px; min-height: 32px; }
+.laboratory-status[data-error="true"] { color: #f0c396; }
+.laboratory-camera-row { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.laboratory-workbench .laboratory-reset { min-height: 28px; background: transparent; color: #bbccd1; }
+.laboratory-note { font-size: 9px; color: #9aadb4; }
+
+/* %% native CRAM execution */
+.laboratory-robot { display: grid; gap: 8px; padding: 0 0 13px; border-bottom: 1px solid #3d555d; }
+.laboratory-robot-heading { color: #a7e3d8; }
+.laboratory-robot-note { color: #aebfc5; font-size: 10px; }
+.laboratory-workbench .laboratory-robot-start { background: #345b78; border-color: #6688a1; font-weight: 650; }
+.laboratory-robot-status { color: #b6e4d6; font-size: 11px; }
+.laboratory-robot-status[data-error="true"] { color: #f0c396; }
+.laboratory-robot a { color: #9bdcd8; font-size: 11px; }
+.laboratory-robot [hidden] { display: none; }
+.laboratory-robot-details { color: #afc7ce; font-size: 10px; }
+.laboratory-robot-details summary { cursor: pointer; }
+.laboratory-robot-log { max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 10px/1.4 monospace; }
+.laboratory-manual-heading { font-size: 11px; color: #b8cbd1; }
+
+/* %% compact panels */
+@media (max-width: 700px) {
+  .laboratory-workbench { right: 8px; bottom: 8px; width: 242px; max-height: calc(100% - 16px); }
+  .laboratory-body { gap: 7px; padding: 0 11px 11px; }
+  .laboratory-heading { padding: 10px 11px; }
+}

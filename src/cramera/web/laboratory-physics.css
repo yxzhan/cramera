@@ -1,0 +1,77 @@
+/* %% laboratory contact controls */
+.laboratory-physics {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 9;
+  width: 270px;
+  max-height: calc(100% - 32px);
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 17px;
+  border: 1px solid #cbdad7;
+  border-radius: 14px;
+  background: rgba(248, 252, 250, .96);
+  color: #18302d;
+  box-shadow: 0 8px 28px #193c3020;
+  font: 13px/1.45 system-ui, sans-serif;
+}
+.laboratory-physics h3 { margin: 0 0 8px; font-size: 19px; }
+.laboratory-physics p { margin: 8px 0; }
+.laboratory-physics-intro, .laboratory-physics-note, .laboratory-physics-robot-motion-note { color: #536b64; font-size: 12px; }
+.laboratory-physics-field { display: grid; gap: 5px; margin: 12px 0; }
+.laboratory-physics button, .laboratory-physics select, .laboratory-physics input, .laboratory-physics-entry button {
+  box-sizing: border-box;
+  min-height: 35px;
+  border: 1px solid #b8d0c8;
+  border-radius: 7px;
+  background: #fff;
+  color: #183b30;
+  font: inherit;
+  cursor: pointer;
+  padding: 7px 10px;
+}
+.laboratory-physics > button, .laboratory-physics select, .laboratory-physics-entry button { width: 100%; }
+.laboratory-physics button:disabled { opacity: .5; cursor: default; }
+.laboratory-physics input:disabled { opacity: .5; }
+.laboratory-physics-liquid { margin-top: 12px; padding-top: 10px; border-top: 1px solid #cbdad7; }
+.laboratory-physics-scale { margin-top: 12px; padding-top: 10px; border-top: 1px solid #cbdad7; }
+.laboratory-physics-scale[hidden] { display: none; }
+.laboratory-physics-scale h4 { margin: 0 0 5px; font-size: 15px; }
+.laboratory-physics-scale > button { width: 100%; margin-top: 5px; }
+.laboratory-physics-scale-reading { font: 600 25px/1.25 monospace; font-variant-numeric: tabular-nums; }
+.laboratory-physics-scale-status { font-size: 12px; font-variant-numeric: tabular-nums; color: #536b64; }
+.laboratory-physics-liquid[hidden] { display: none; }
+.laboratory-physics-liquid h4 { margin: 0 0 5px; font-size: 15px; }
+.laboratory-physics-liquid > button { width: 100%; margin-top: 5px; }
+.laboratory-physics-volume-label { display: grid; grid-template-columns: 1fr 85px; align-items: center; gap: 8px; }
+.laboratory-physics-volume { width: 100%; cursor: text !important; }
+.laboratory-physics-liquid-status, .laboratory-physics-tilt-status { font-variant-numeric: tabular-nums; font-size: 12px; }
+.laboratory-physics-tilts { display: grid; grid-template-columns: 1fr 1.35fr 1fr; gap: 5px; margin-top: 5px; }
+.laboratory-physics-moves { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin: 7px 0; }
+.laboratory-physics-moves button:nth-last-child(-n+2) { grid-column: span 2; }
+.laboratory-physics .laboratory-physics-hold { background: #e0f1e8; }
+.laboratory-physics .laboratory-physics-release { background: #fff2d9; }
+.laboratory-physics-force { font-variant-numeric: tabular-nums; font-weight: 600; }
+.laboratory-physics-distance { font-variant-numeric: tabular-nums; }
+.laboratory-physics-status[data-error="true"] { color: #a32f20; }
+.laboratory-physics-robot-status[data-error="true"] { color: #a32f20; }
+.laboratory-physics .laboratory-physics-robot-run { background: #dcefe7; margin-top: 5px; font-weight: 600; }
+.laboratory-physics .laboratory-physics-robot-mix { background: #236859; border-color: #236859; color: #fff; margin-top: 12px; font-weight: 650; }
+.laboratory-physics-robot-recipe { font-size: 12px; color: #35594e; }
+.laboratory-physics .laboratory-physics-robot-pause { margin-top: 5px; }
+.laboratory-physics-robot-progress { width: 100%; accent-color: #278365; }
+.laboratory-physics-robot-measurements { font-size: 12px; font-variant-numeric: tabular-nums; }
+.laboratory-physics-robot-reset-note { color: #536b64; font-size: 12px; }
+.laboratory-physics-cameras { display: flex; gap: 5px; margin: 10px 0; }
+.laboratory-physics-cameras button { flex: 1; }
+.laboratory-physics-entry { margin: 12px 0; font: 13px/1.4 system-ui, sans-serif; }
+.laboratory-physics-entry p:empty { display: none; }
+.laboratory-physics-scene .playback-scrub-row,
+.laboratory-physics-scene #play-btn,
+.laboratory-physics-scene #playback-speed,
+.laboratory-physics-scene #live-btn,
+.laboratory-physics-scene #lp-joints { display: none !important; }
+@media (max-width: 650px) {
+  .laboratory-physics { width: 225px; top: 8px; right: 8px; padding: 12px; max-height: 65%; }
+}

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="de">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CRAMERA Labor – Anmeldung</title>
+<style>
+  body { font: 17px system-ui, sans-serif; background: #101a20; color: #edf5f5; margin: 0; }
+  main { max-width: 360px; margin: 14vh auto; padding: 28px; }
+  h1 { font-size: 27px; }
+  p { color: #b9ccce; line-height: 1.5; }
+  input, button { box-sizing: border-box; width: 100%; padding: 14px; margin-top: 10px; border-radius: 8px; font: inherit; }
+  input { background: #20313a; color: white; border: 1px solid #57747a; }
+  button { background: #87d6b4; border: 0; color: #10281f; cursor: pointer; }
+</style>
+<main>
+  <h1>CRAMERA Labor</h1>
+  <p>Mit deinem Zugangspasswort öffnest du das Labor mit PR2, Kontaktphysik und Flüssigkeiten.</p>
+  <form action="/login" method="post">
+    <label for="password">Passwort</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+    <button type="submit">Labor öffnen</button>
+  </form>
+</main>
+</html>

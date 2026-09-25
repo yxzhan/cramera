@@ -1,0 +1,308 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot name="tube_teal">
+  <link name="tube_teal">
+    <visual>
+      <geometry>
+        <mesh filename="assets/tube_teal.glb" />
+      </geometry>
+    </visual>
+    <collision name="glass_wall_0">
+      <origin xyz="0.0084 0 0.0795" rpy="0 0 0" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_1">
+      <origin xyz="0.0083281368 0.00109642 0.0795" rpy="0 0 0.13089969" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_2">
+      <origin xyz="0.0081137769 0.00217408 0.0795" rpy="0 0 0.26179939" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_3">
+      <origin xyz="0.0077605881 0.0032145408 0.0795" rpy="0 0 0.39269908" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_4">
+      <origin xyz="0.0072746134 0.0042 0.0795" rpy="0 0 0.52359878" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_5">
+      <origin xyz="0.0066641681 0.005113596 0.0795" rpy="0 0 0.65449847" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_6">
+      <origin xyz="0.005939697 0.005939697 0.0795" rpy="0 0 0.78539816" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_7">
+      <origin xyz="0.005113596 0.0066641681 0.0795" rpy="0 0 0.91629786" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_8">
+      <origin xyz="0.0042 0.0072746134 0.0795" rpy="0 0 1.0471976" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_9">
+      <origin xyz="0.0032145408 0.0077605881 0.0795" rpy="0 0 1.1780972" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_10">
+      <origin xyz="0.00217408 0.0081137769 0.0795" rpy="0 0 1.3089969" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_11">
+      <origin xyz="0.00109642 0.0083281368 0.0795" rpy="0 0 1.4398966" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_12">
+      <origin xyz="5.1435166e-19 0.0084 0.0795" rpy="0 0 1.5707963" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_13">
+      <origin xyz="-0.00109642 0.0083281368 0.0795" rpy="0 0 1.701696" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_14">
+      <origin xyz="-0.00217408 0.0081137769 0.0795" rpy="0 0 1.8325957" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_15">
+      <origin xyz="-0.0032145408 0.0077605881 0.0795" rpy="0 0 1.9634954" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_16">
+      <origin xyz="-0.0042 0.0072746134 0.0795" rpy="0 0 2.0943951" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_17">
+      <origin xyz="-0.005113596 0.0066641681 0.0795" rpy="0 0 2.2252948" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_18">
+      <origin xyz="-0.005939697 0.005939697 0.0795" rpy="0 0 2.3561945" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_19">
+      <origin xyz="-0.0066641681 0.005113596 0.0795" rpy="0 0 2.4870942" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_20">
+      <origin xyz="-0.0072746134 0.0042 0.0795" rpy="0 0 2.6179939" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_21">
+      <origin xyz="-0.0077605881 0.0032145408 0.0795" rpy="0 0 2.7488936" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_22">
+      <origin xyz="-0.0081137769 0.00217408 0.0795" rpy="0 0 2.8797933" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_23">
+      <origin xyz="-0.0083281368 0.00109642 0.0795" rpy="0 0 3.010693" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_24">
+      <origin xyz="-0.0084 1.0287033e-18 0.0795" rpy="0 0 3.1415927" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_25">
+      <origin xyz="-0.0083281368 -0.00109642 0.0795" rpy="0 0 3.2724923" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_26">
+      <origin xyz="-0.0081137769 -0.00217408 0.0795" rpy="0 0 3.403392" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_27">
+      <origin xyz="-0.0077605881 -0.0032145408 0.0795" rpy="0 0 3.5342917" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_28">
+      <origin xyz="-0.0072746134 -0.0042 0.0795" rpy="0 0 3.6651914" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_29">
+      <origin xyz="-0.0066641681 -0.005113596 0.0795" rpy="0 0 3.7960911" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_30">
+      <origin xyz="-0.005939697 -0.005939697 0.0795" rpy="0 0 3.9269908" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_31">
+      <origin xyz="-0.005113596 -0.0066641681 0.0795" rpy="0 0 4.0578905" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_32">
+      <origin xyz="-0.0042 -0.0072746134 0.0795" rpy="0 0 4.1887902" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_33">
+      <origin xyz="-0.0032145408 -0.0077605881 0.0795" rpy="0 0 4.3196899" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_34">
+      <origin xyz="-0.00217408 -0.0081137769 0.0795" rpy="0 0 4.4505896" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_35">
+      <origin xyz="-0.00109642 -0.0083281368 0.0795" rpy="0 0 4.5814893" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_36">
+      <origin xyz="-1.543055e-18 -0.0084 0.0795" rpy="0 0 4.712389" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_37">
+      <origin xyz="0.00109642 -0.0083281368 0.0795" rpy="0 0 4.8432887" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_38">
+      <origin xyz="0.00217408 -0.0081137769 0.0795" rpy="0 0 4.9741884" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_39">
+      <origin xyz="0.0032145408 -0.0077605881 0.0795" rpy="0 0 5.1050881" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_40">
+      <origin xyz="0.0042 -0.0072746134 0.0795" rpy="0 0 5.2359878" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_41">
+      <origin xyz="0.005113596 -0.0066641681 0.0795" rpy="0 0 5.3668874" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_42">
+      <origin xyz="0.005939697 -0.005939697 0.0795" rpy="0 0 5.4977871" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_43">
+      <origin xyz="0.0066641681 -0.005113596 0.0795" rpy="0 0 5.6286868" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_44">
+      <origin xyz="0.0072746134 -0.0042 0.0795" rpy="0 0 5.7595865" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_45">
+      <origin xyz="0.0077605881 -0.0032145408 0.0795" rpy="0 0 5.8904862" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_46">
+      <origin xyz="0.0081137769 -0.00217408 0.0795" rpy="0 0 6.0213859" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_wall_47">
+      <origin xyz="0.0083281368 -0.00109642 0.0795" rpy="0 0 6.1522856" />
+      <geometry>
+        <box size="0.0012 0.001022478 0.141" />
+      </geometry>
+    </collision>
+    <collision name="glass_bottom">
+      <geometry>
+        <mesh filename="assets/glass_bottom_collision.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0 0 0.075" />
+      <mass value="0.012" />
+      <inertia ixx="2.2824e-05" iyy="2.2824e-05" izz="6.48e-07" ixy="0" ixz="0" iyz="0" />
+    </inertial>
+  </link>
+</robot>
