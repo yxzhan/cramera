@@ -1211,10 +1211,7 @@ Panels.define('robot-scene', function (root, bus) {
 
   //: Ask the bridge to set a joint, e.g. how far a marker's fingers are open.
   function postJoint(joint, position, final) {
-    fetch(liveUrl() + '/joint', {
-      method: 'POST',
-      body: JSON.stringify({ joint: joint, position: position, final: !!final }),
-    }).catch(function () {});
+    postLive('joint', { joint: joint, position: position, final: !!final });
   }
 
   //: How opaque a floating object is in each state: see-through at rest, so it never
@@ -1626,10 +1623,14 @@ Panels.define('robot-scene', function (root, bus) {
     const now = performance.now();
     if (!final && now - lastMovePost < 100) return;
     lastMovePost = now;
-    fetch(liveUrl() + '/move', {
-      method: 'POST',
-      body: JSON.stringify({ object: key, position: [round3(x), round3(y), round3(z)], final: !!final }),
-    }).catch(function () {});
+    postLive('move', { object: key, position: [round3(x), round3(y), round3(z)], final: !!final });
+  }
+  //: Send a viewer request to the bridge: over the live socket when it is open, as a
+  //: POST to the route of the same name otherwise.
+  function postLive(route, body) {
+    if (liveSocket && liveSocket.send(route, body)) return;
+    fetch(liveUrl() + '/' + route, { method: 'POST', body: JSON.stringify(body) })
+      .catch(function () {});
   }
   function round3(v) { return Math.round(v * 1000) / 1000; }
 
@@ -1652,10 +1653,7 @@ Panels.define('robot-scene', function (root, bus) {
     const now = performance.now();
     if (!final && now - lastJointPost < 100) return;
     lastJointPost = now;
-    fetch(liveUrl() + '/joint', {
-      method: 'POST',
-      body: JSON.stringify({ joint: liveJointKey.get(joint) || fallbackKey, position: round3(value), final: !!final }),
-    }).catch(function () {});
+    postLive('joint', { joint: liveJointKey.get(joint) || fallbackKey, position: round3(value), final: !!final });
   }
   function jointLabel(entry) {
     return entry.name.replace(/^.*\//, '').replace(/_joint$/, '').replace(/_/g, ' ').replace(/[&<>]/g, '');
@@ -1868,11 +1866,12 @@ Panels.define('robot-scene', function (root, bus) {
   let hiddenMarkerNs = MarkerSettings.hiddenNamespaces(window.localStorage);
   function refreshMarkers() {
     fetch(liveUrl() + '/markers').then(function (r) { return r.json(); })
-      .then(function (payload) {
-        lastMarkerPayload = payload;
-        rebuildMarkers();
-        renderMarkerNamespaces();
-      }).catch(function () {});
+      .then(showMarkers).catch(function () {});
+  }
+  function showMarkers(payload) {
+    lastMarkerPayload = payload;
+    rebuildMarkers();
+    renderMarkerNamespaces();
   }
   // The overlay is reconciled against the published set, not rebuilt from it. A
   // live demo republishes every marker whenever any one of them moves — and a
@@ -2071,9 +2070,10 @@ Panels.define('robot-scene', function (root, bus) {
         if (m.prefix === prefix) setPose(m.obj, modelBases[prefix], modelBases[prefix], 0);
       });
     }
+    // over the socket the overlay arrives with the state that announces it
     if (typeof st.markersVersion === 'number' && st.markersVersion !== lastMarkersVersion) {
       lastMarkersVersion = st.markersVersion;
-      refreshMarkers();
+      if (!liveSocketOpen()) refreshMarkers();
     }
     let unknown = false;
     liveStateKeys = st.objects || {};
@@ -2112,22 +2112,50 @@ Panels.define('robot-scene', function (root, bus) {
   const LIVE_POLL_TIMEOUT_MS = 2000;
   let livePolling = false;
   function livePoll() {
-    if (livePolling) return;
     if (++livePolls % 90 === 0) syncLiveObjects();   // ~3 s catalog reconcile
+    if (livePolling || liveSocketOpen()) return;
     livePolling = true;
     const abort = new AbortController();
     const giveUp = setTimeout(function () { abort.abort(); }, LIVE_POLL_TIMEOUT_MS);
     fetch(liveUrl() + '/state', { signal: abort.signal }).then(function (r) { return r.json(); })
       .then(function (st) {
         liveFails = 0;
-        const seq = st.sequenceNumber;
-        if (seq > lastSeq || seq < lastSeq - 1000 || typeof seq !== 'number') {
-          lastSeq = seq;
-          applyLive(st);
-        }
+        applyLiveIfNewer(st);
       })
       .catch(function () { if (++liveFails > 30) setLive(false); })
       .then(function () { clearTimeout(giveUp); livePolling = false; });
+  }
+  function applyLiveIfNewer(st) {
+    const seq = st.sequenceNumber;
+    if (seq > lastSeq || seq < lastSeq - 1000 || typeof seq !== 'number') {
+      lastSeq = seq;
+      applyLive(st);
+    }
+  }
+  // The live WebSocket (core/live-socket.js): the state and the marker overlay pushed
+  // as they change, and the viewer's requests sent back over it. Polling stays as the
+  // fallback for whenever it is not open -- livePoll skips its turn while it is.
+  let liveSocket = null;
+  function liveSocketOpen() { return !!liveSocket && liveSocket.isOpen(); }
+  function onLiveSocketUpdate(message) {
+    liveFails = 0;
+    // the overlay first: the state announcing its version must not refetch it
+    if (message.markers) {
+      if (typeof message.markers.version === 'number') lastMarkersVersion = message.markers.version;
+      showMarkers(message.markers);
+    }
+    if (message.state) applyLiveIfNewer(message.state);
+  }
+  function openLiveSocket() {
+    if (liveSocket || !window.LiveSocket) return;
+    liveSocket = LiveSocket.connect(liveUrl, { onUpdate: onLiveSocketUpdate });
+    LiveSocket.share(liveSocket);
+  }
+  function closeLiveSocket() {
+    if (!liveSocket) return;
+    liveSocket.close();
+    liveSocket = null;
+    LiveSocket.share(null);
   }
   // sync the scene's objects to the ones that actually exist in the running
   // world: spawn any the viewer is missing (geometry served by the bridge),
@@ -2237,12 +2265,14 @@ Panels.define('robot-scene', function (root, bus) {
       applyMarkerTopicOverrides();
       verifyLiveBundle();
       syncLiveObjects();
+      openLiveSocket();
       // ~30 Hz: one request at a time (see livePoll), so a slow answer only skips
       // ticks rather than piling requests up behind it
       liveTimer = setInterval(livePoll, 33);
     } else if (liveTimer) {
       clearInterval(liveTimer);
       liveTimer = null;
+      closeLiveSocket();
       // remove objects that only existed for the live world, restore the rest
       clearMarkers();
       for (const key in liveSpawned) removeObject(key);
@@ -2408,15 +2438,12 @@ Panels.define('robot-scene', function (root, bus) {
     }
 
     function post(key, g, final) {
-      fetch(liveUrl() + '/move', {
-        method: 'POST',
-        body: JSON.stringify({
-          object: key,
-          position: [round3(g.position.x), round3(g.position.y), round3(g.position.z)],
-          quaternion: [g.quaternion.x, g.quaternion.y, g.quaternion.z, g.quaternion.w],
-          final: !!final,
-        }),
-      }).catch(function () {});
+      postLive('move', {
+        object: key,
+        position: [round3(g.position.x), round3(g.position.y), round3(g.position.z)],
+        quaternion: [g.quaternion.x, g.quaternion.y, g.quaternion.z, g.quaternion.w],
+        final: !!final,
+      });
     }
 
     //: The trigger was pressed: take the marker within reach, or, with none there, hold

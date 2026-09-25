@@ -88,16 +88,22 @@
     //: :param base: The bridge's base url.
     //: :param body: The JSON body to post.
     //: :param leaving: Whether the page may be going away as this is sent.
+    //: Over the page's live socket when it is open (see core/live-socket.js), except
+    //: on the way out, where only a keepalive request outlives the page.
     function post(base, body, leaving) {
+      const socket = !leaving && global.LiveSocket && global.LiveSocket.shared();
       try {
-        global.fetch(base + '/avatar', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-          keepalive: !!leaving,
-        }).then(function (response) {
-          return response.ok ? response.json() : null;
-        }).then(function (answer) {
+        const answered = socket && socket.isOpen()
+          ? socket.request('avatar', body)
+          : global.fetch(base + '/avatar', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            keepalive: !!leaving,
+          }).then(function (response) {
+            return response.ok ? response.json() : null;
+          });
+        answered.then(function (answer) {
           if (!answer || !answer.name || answer.name === identity.name) return;
           identity = { name: answer.name, color: answer.color, head: answer.head };
           onIdentity(identity);

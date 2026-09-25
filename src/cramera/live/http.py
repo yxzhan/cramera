@@ -8,6 +8,8 @@ HTTP endpoints of the live bridge (default port 8765).
     GET /state   {sequenceNumber, frames: {prefixed_joint: position},
                   base: pose, objects: {mesh_key: pose}}
     GET /objects geometry catalog (mesh served via /mesh?key=)
+    GET /ws      a WebSocket streaming /state and /markers as they change, and taking
+                  /move, /joint and /avatar bodies back (see :mod:`cramera.live.websocket`)
     GET /markers {version, markers: [{topic, ns, id, kind, pose, scale, color,
                   opacity, points, text}]}  the CRAM debug-marker overlay
     GET /live_scene  {scene}  bundles the running demo's *current* world into a
@@ -50,6 +52,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import socket
 import sys
 import threading
 import urllib.parse
@@ -77,6 +80,7 @@ from cramera.live.teleop import (
     TeleopUnavailable,
 )
 from cramera.live.avatar import observe_avatar
+from cramera.live import websocket
 from cramera.live.query import NoQuerySourceRegistered
 from cramera.live.frame_range import FrameRange, InvalidFrameRange
 from cramera.live.live_bundle import build_live_scene
@@ -137,7 +141,34 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         Entry point :class:`~http.server.BaseHTTPRequestHandler` dispatches a ``GET``
         request to, found by name as ``"do_" + self.command``.
         """
+        if self.path.startswith("/ws"):
+            return self.stream_over_websocket()
         self.route_snapshot_request()
+
+    def stream_over_websocket(self) -> None:
+        """
+        Upgrade to the live WebSocket and stream on it until the viewer goes away.
+
+        The handshake is written by hand: the handler speaks HTTP/1.0, and a browser
+        takes a ``101`` only in an HTTP/1.1 status line.
+        """
+        key = self.headers.get("Sec-WebSocket-Key")
+        if not key or "websocket" not in (self.headers.get("Upgrade") or "").lower():
+            return self._send_json(
+                {"ok": False, "error": "expected a WebSocket upgrade"}, code=400
+            )
+        self.wfile.write(
+            (
+                "HTTP/1.1 101 Switching Protocols\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Accept: {websocket.accept_key(key)}\r\n\r\n"
+            ).encode()
+        )
+        self.wfile.flush()
+        self.close_connection = True
+        self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        websocket.LiveSocket(self.bridge, self.connection, self.rfile).serve()
 
     def route_snapshot_request(self) -> None:
         """
@@ -472,7 +503,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         """
         payload = self._posted_payload()
         if payload is None:
-            return self._send_json({"ok": False, "error": "expected a JSON object"}, code=400)
+            return self._send_json(
+                {"ok": False, "error": "expected a JSON object"}, code=400
+            )
         body, code = observe_avatar(self.bridge, payload)
         self._send_json(body, code=code)
 
