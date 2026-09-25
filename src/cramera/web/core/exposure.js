@@ -5,7 +5,8 @@
  * before tone mapping: it changes the level without touching the ratios between
  * the key, fill and ambient lights, which is what editing a light would do.
  *
- * ``?exposure=0.7`` overrides it for one page load. Judging an exposure means
+ * A scene may carry its own (``rendering.exposure`` in its scene.json), and
+ * ``?exposure=0.7`` overrides both for one page load. Judging an exposure means
  * looking at the real scene, and inside a headset there is no other way to try a
  * value — nobody is editing source with a headset on.
  *
@@ -22,14 +23,17 @@
   const MAX = 1;
   const PARAMETER = /[?&]exposure=([^&]*)/;
 
-  //: The exposure a page URL asks for, or :data:`DEFAULT`.
+  //: The exposure to render at: what the page URL asks for, else what the scene
+  //: declares, else :data:`DEFAULT`.
   //:
   //: :param search: The URL's query string, ``window.location.search``.
-  function of(search) {
+  //: :param declared: The scene's own ``rendering.exposure``, if it has one.
+  function of(search, declared) {
+    const fallback = Number.isFinite(declared) && declared > 0 ? declared : DEFAULT;
     const asked = PARAMETER.exec(search || '');
-    if (!asked) return DEFAULT;
+    if (!asked) return fallback;
     const value = parseFloat(decodeURIComponent(asked[1]));
-    if (!isFinite(value) || value <= 0) return DEFAULT;
+    if (!isFinite(value) || value <= 0) return fallback;
     return Math.min(Math.max(value, MIN), MAX);
   }
 

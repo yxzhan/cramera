@@ -2907,8 +2907,8 @@ Panels.define('robot-scene', function mountRobotScene(root, bus) {
 
   function renderFrame() {
     const ambientOcclusion = !(SCENE && SCENE.rendering && SCENE.rendering.ambientOcclusion === false);
-    renderer.toneMappingExposure = SCENE && SCENE.rendering && Number.isFinite(SCENE.rendering.exposure)
-      ? SCENE.rendering.exposure : 0.95;
+    renderer.toneMappingExposure = Exposure.of(window.location.search,
+      SCENE && SCENE.rendering ? SCENE.rendering.exposure : undefined);
     // EffectComposer renders through its own targets, which are not the XR
     // framebuffer — SSAO is a desktop-only pass
     if (composer && ambientOcclusion && !renderer.xr.isPresenting) composer.render();
