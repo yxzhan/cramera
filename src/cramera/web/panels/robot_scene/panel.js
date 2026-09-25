@@ -599,16 +599,22 @@ Panels.define('robot-scene', function mountRobotScene(root, bus) {
     loader.loadMeshCb = function (path, mgr, done) {
       if (/\.obj$/i.test(path)) {
         // an .obj's per-face materials (fabric textures, plastic vs. screen colors)
-        // live in its companion .mtl — load that first so a multi-material mesh does
-        // not fall back to a single flat grey
-        const loadObj = function (materials) {
-          const objLoader = new THREE.OBJLoader(mgr);
-          if (materials) { materials.preload(); objLoader.setMaterials(materials); }
-          objLoader.load(path, function (o) { done(o); },
-            undefined, function () { done(new THREE.Object3D()); });
-        };
-        new THREE.MTLLoader(mgr).load(path.replace(/\.obj$/i, '.mtl'), loadObj,
-          undefined, function () { loadObj(null); });
+        // live in the .mtl its mtllib line names — loaded before the faces are
+        // parsed, so a multi-material mesh does not fall back to a single flat grey.
+        // Only when it names one: most meshes (every one a live bundle exports) have
+        // none, and asking for one anyway is a 404 per mesh, hundreds of round trips
+        // through a slow proxy before the scene is up.
+        new THREE.FileLoader(mgr).load(path, function (text) {
+          const parse = function (materials) {
+            const objLoader = new THREE.OBJLoader(mgr);
+            if (materials) { materials.preload(); objLoader.setMaterials(materials); }
+            done(objLoader.parse(text));
+          };
+          const library = /^mtllib\s+(.+?)\s*$/m.exec(text);
+          if (!library) { parse(null); return; }
+          new THREE.MTLLoader(mgr).load(path.replace(/[^/]*$/, '') + library[1], parse,
+            undefined, function () { parse(null); });
+        }, undefined, function () { done(new THREE.Object3D()); });
       } else if (/\.glb$/i.test(path)) {
         new THREE.GLTFLoader(mgr).load(path, function (g) { done(g.scene); },
           undefined, function () { done(new THREE.Object3D()); });
