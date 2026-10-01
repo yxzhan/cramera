@@ -16,8 +16,21 @@
 (function (global) {
   'use strict';
 
-  //: the WebXR session mode a headset presents
+  //: the WebXR session mode a headset presents: one that can blend the scene with
+  //: the headset's own camera view where the browser offers it (Quest), so the sky
+  //: can be faded out to show the real room; fully rendered otherwise. The sky is up
+  //: by default either way -- seeing the room move against a scene that does not is
+  //: disorienting -- and the left controller's Y button fades it out and back.
+  const PASSTHROUGH_MODE = 'immersive-ar';
   const SESSION_MODE = 'immersive-vr';
+  //: the controller and xr-standard button that fades the sky out and back: Y
+  const PASSTHROUGH_HAND = 'left';
+  const PASSTHROUGH_BUTTON = 5;
+  //: how long the sky takes to fade all the way, in seconds -- slow enough that the
+  //: room seems to come up behind the scene rather than replace it
+  const SKY_FADE_SECONDS = 1.5;
+  //: the sky dome's radius, in metres: inside the camera's far plane
+  const SKY_RADIUS = 150;
   //: the reference space that puts the origin on the physical floor, so a rig at
   //: y=0 stands on the scene's ground rather than floating at head height
   const FLOOR_SPACE = 'local-floor';
@@ -44,20 +57,28 @@
   //: scene renders fine on the desktop but misses frame rate in stereo
   const NO_SHADOW_FLAG = /[?&]vr=noshadow(&|$)/;
 
-  //: Whether this browser can present to a headset at all.
+  //: The session mode this browser presents in: :data:`PASSTHROUGH_MODE` where it
+  //: is offered, else :data:`SESSION_MODE`, else null.
   //:
   //: WebXR needs a secure context, so a page served over plain http to anything
-  //: but localhost has no navigator.xr and answers false here.
+  //: but localhost has no navigator.xr and answers null here.
+  //:
+  //: :param cb: Called with the mode, or null, once the browser has answered.
+  function sessionMode(cb) {
+    const xr = global.navigator && global.navigator.xr;
+    if (!xr || !xr.isSessionSupported) { cb(null); return; }
+    const ask = function (mode) {
+      return xr.isSessionSupported(mode).then(function (ok) { return ok ? mode : null; })
+        .catch(function () { return null; });
+    };
+    ask(PASSTHROUGH_MODE).then(function (mode) { return mode || ask(SESSION_MODE); }).then(cb);
+  }
+
+  //: Whether this browser can present to a headset at all.
   //:
   //: :param cb: Called with true or false once the browser has answered.
   function supported(cb) {
-    if (!global.navigator || !global.navigator.xr || !global.navigator.xr.isSessionSupported) {
-      cb(false);
-      return;
-    }
-    global.navigator.xr.isSessionSupported(SESSION_MODE)
-      .then(function (ok) { cb(!!ok); })
-      .catch(function () { cb(false); });
+    sessionMode(function (mode) { cb(!!mode); });
   }
 
   //: The aim ray one controller draws, as a line down its own -Z.
@@ -265,6 +286,7 @@
     //: :param delta: Seconds since the previous frame.
     function update(delta) {
       readSticks();
+      fadeSky(delta);
       aim();
       if (delta > 0 && delta < 1) {
         frames++;
@@ -273,8 +295,78 @@
       }
     }
 
+    //: While a session blends with the room: the sky as a dome that can fade, what
+    //: it replaced, and where the fade is heading. Null in a session that cannot.
+    let sky = null;
+    let yWasPressed = false;
+
+    //: Swap the sky backdrop for a dome of the same picture around the head. A
+    //: backdrop is all or nothing; a dome has an opacity, and fading it shows the
+    //: headset's camera view through wherever the scene draws nothing -- the clear
+    //: is transparent from here on. Only where the session really blends with the
+    //: room: in an 'opaque' one the room is black.
+    function raiseSky() {
+      if (!session.environmentBlendMode || session.environmentBlendMode === 'opaque') return;
+      const picture = scene.background && scene.background.isTexture ? scene.background.clone() : null;
+      if (picture) { picture.mapping = THREE.UVMapping; picture.needsUpdate = true; }
+      const dome = new THREE.Mesh(
+        new THREE.SphereGeometry(SKY_RADIUS, 48, 24),
+        new THREE.MeshBasicMaterial({
+          map: picture, color: picture ? 0xffffff : 0x4f86c2, side: THREE.BackSide,
+          transparent: true, depthWrite: false, fog: false,
+        })
+      );
+      dome.renderOrder = -1;
+      dome.frustumCulled = false;
+      dome.material.opacity = 1;
+      sky = {
+        dome: dome,
+        target: 1,
+        background: scene.background,
+        clearColor: renderer.getClearColor(new THREE.Color()),
+        clearAlpha: renderer.getClearAlpha(),
+      };
+      scene.background = null;
+      renderer.setClearColor(0x000000, 0);
+      scene.add(dome);
+    }
+
+    function lowerSky() {
+      if (!sky) return;
+      scene.remove(sky.dome);
+      sky.dome.geometry.dispose();
+      if (sky.dome.material.map) sky.dome.material.map.dispose();
+      sky.dome.material.dispose();
+      scene.background = sky.background;
+      renderer.setClearColor(sky.clearColor, sky.clearAlpha);
+      sky = null;
+    }
+
+    //: A fresh press of Y turns the fade around; the dome eases toward where it is
+    //: heading and stays centred on the head, so it is never walked out of.
+    function fadeSky(delta) {
+      if (!sky) return;
+      let pressed = false;
+      const sources = session.inputSources;
+      for (let i = 0; i < sources.length; i++) {
+        const buttons = sources[i].handedness === PASSTHROUGH_HAND
+          && sources[i].gamepad && sources[i].gamepad.buttons;
+        if (buttons && buttons[PASSTHROUGH_BUTTON] && buttons[PASSTHROUGH_BUTTON].pressed) pressed = true;
+      }
+      if (pressed && !yWasPressed) sky.target = sky.target > 0.5 ? 0 : 1;
+      yWasPressed = pressed;
+      const material = sky.dome.material;
+      const step = Math.min(Math.max(delta, 0), 0.1) / SKY_FADE_SECONDS;
+      if (material.opacity < sky.target) material.opacity = Math.min(sky.target, material.opacity + step);
+      else if (material.opacity > sky.target) material.opacity = Math.max(sky.target, material.opacity - step);
+      // hidden outright at zero, so a fully faded sky costs nothing to draw
+      sky.dome.visible = material.opacity > 0;
+      camera.getWorldPosition(sky.dome.position);
+    }
+
     function onSessionStart() {
       session = renderer.xr.getSession();
+      raiseSky();
       frames = 0; elapsed = 0; worst = 0;
       controls.enabled = false;
       // a headset reports its own head height, so the camera sits at the rig's own
@@ -282,7 +374,7 @@
       rig.adopt(0);
       rig.place();
       console.log('[cramera] VR session: floor at y=' + rig.floor().toFixed(3)
-        + ', reference space ' + FLOOR_SPACE);
+        + ', reference space ' + FLOOR_SPACE + ', blend ' + session.environmentBlendMode);
       if (NO_SHADOW_FLAG.test(global.location.search)) {
         shadowsWere = renderer.shadowMap.enabled;
         renderer.shadowMap.enabled = false;
@@ -304,6 +396,7 @@
       landing = null;
       mark.visible = false;
       rig.release();
+      lowerSky();
       if (shadowsWere !== null) {
         renderer.shadowMap.enabled = shadowsWere;
         scene.traverse(function (object) {
@@ -319,10 +412,13 @@
     renderer.xr.addEventListener('sessionstart', onSessionStart);
     renderer.xr.addEventListener('sessionend', onSessionEnd);
 
+    let mode = null;                 // the session mode, once the browser has answered
+
     function enter() {
       if (session) { session.end(); return; }
+      if (!mode) return;
       renderer.xr.setReferenceSpaceType(FLOOR_SPACE);
-      global.navigator.xr.requestSession(SESSION_MODE, {
+      global.navigator.xr.requestSession(mode, {
         optionalFeatures: [FLOOR_SPACE, 'bounded-floor'],
       }).then(function (granted) {
         return renderer.xr.setSession(granted);
@@ -337,10 +433,13 @@
     renderer.xr.enabled = true;
 
     button.addEventListener('click', enter);
-    supported(function (ok) {
+    sessionMode(function (answered) {
+      mode = answered;
+      const ok = !!answered;
       button.style.display = ok ? '' : 'none';
       button.title = ok
         ? 'View the scene from inside it. Right thumbstick forward to teleport, sideways to turn.'
+          + (answered === PASSTHROUGH_MODE ? ' Y on the left controller fades the sky to your room and back.' : '')
         : '';
     });
 
@@ -354,6 +453,7 @@
 
   global.VRMode = {
     SESSION_MODE: SESSION_MODE,
+    PASSTHROUGH_MODE: PASSTHROUGH_MODE,
     supported: supported,
     install: install,
     handBlock: handBlock,
