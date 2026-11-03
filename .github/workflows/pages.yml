@@ -7,6 +7,7 @@
 # The questions plugin's browser module is included without krrood and cramera-bridge: on
 # the static site it shows the answers recorded in each bundle's recorded_answers.json,
 # which cramera-bridge's cramera-record-answers writes in a CRAM workspace.
+# The Shared Sim tab embeds the Robot Lobby that https://yxzhan.github.io/robot-lobby/ publishes.
 name: Publish the demo site
 
 on:
@@ -37,8 +38,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install the viewer and the questions plugin
-        run: pip install ./packages/protocol ./packages/viewer ./packages/questions
+      - name: Install the viewer, the questions plugin and the Shared Sim tab
+        run: pip install ./packages/protocol ./packages/viewer ./packages/questions ./packages/plugins/shared-sim
 
       - name: Export the site with the medical laboratory
         run: >
@@ -46,6 +47,7 @@ jobs:
           --scenes "$SCENES"
           --default-scene "$DEFAULT_SCENE"
           --plugin questions
+          --plugin shared-sim
           --commit "$GITHUB_SHA"
           --source "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
 

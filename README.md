@@ -37,6 +37,7 @@ the branch [`archive/pre-v1`](https://github.com/AICOR-Solutions/cramera/tree/ar
 | [`cramera-offline`](packages/plugins/offline) | Guided presentations without a robot or network, and `cramera-check-bundle`. | done |
 | [`cramera-laboratory`](packages/plugins/laboratory) | A dedicated Physical lab page with the small workbench, real PR2 preview, local robot demo and replay, plus manual MuJoCo controls and setup help. | done |
 | [`cramera-scene-runs`](packages/plugins/scene-runs) | A Runs tab that starts the robot runs a server offers, one at a time, follows each live and replays its recording; for a viewer behind a password-checking proxy. | done |
+| [`cramera-shared-sim`](packages/plugins/shared-sim) | A Shared Sim tab showing Robot Lobby, a MuJoCo world in the browser shared by everyone connected, published on its own and embedded in a frame. | done |
 | [`cramera-plan-builder`](packages/plugins/plan-builder) | Compose a plan from the CRAM actions it discovers, objects and plain-language constraints, write it as a CRAM demo, and run it live from the page. | done |
 
 Recordings made with earlier versions open unchanged: a document without a

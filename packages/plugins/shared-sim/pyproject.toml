@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cramera-shared-sim"
+version = "1.0.0"
+description = "A Shared Sim tab: Robot Lobby, a MuJoCo world in the browser shared by everyone connected, under the viewer's top bar."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Yanxiang Zhan" }]
+dependencies = ["cramera==1.0.0", "cramera-protocol==1.0.0"]
+classifiers = ["Programming Language :: Python :: 3", "Operating System :: OS Independent"]
+
+[project.entry-points."cramera.plugins"]
+shared-sim = "cramera_shared_sim.plugin:SharedSimPlugin"
+
+[project.urls]
+Source = "https://github.com/AICOR-Solutions/cramera"
+Lobby = "https://github.com/yxzhan/robot-lobby"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+cramera_shared_sim = ["web/*"]
