@@ -25,7 +25,12 @@ cramera-export-site site --scenes ... --plugin shared-sim
 | --- | --- |
 | `?server=<url>` | join that shared world (a lobby server, `npm run server`) instead of starting one |
 | `?local` | the physics in the page, no shared world |
+| `?stage=<id>` | open that stage (the links the lobby's stages give) |
 | `?lobby=<url>` | another copy of the lobby instead of the published one (a local `npm start`, a test build) |
+
+Any other parameter goes to the lobby too. The lobby gets this page's address as
+`?embed=`, so the links its Share panel gives (the QR code, the code for another
+device, a stage's link) open this page with the shared world, not the lobby alone.
 
 The lobby is a page of another origin in a frame: its browser storage is its own, and
 WebXR in it needs the viewer itself served over HTTPS.
