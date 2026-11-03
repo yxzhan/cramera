@@ -60,6 +60,9 @@ jobs:
           - package: plugins/scene-runs
             module: cramera_scene_runs
             install: -e ./packages/plugins/scene-runs
+          - package: plugins/shared-sim
+            module: cramera_shared_sim
+            install: -e ./packages/plugins/shared-sim
           - package: plugins/laboratory
             module: cramera_laboratory
             install: -e './packages/plugins/laboratory[physics]' -e ./packages/bridge
