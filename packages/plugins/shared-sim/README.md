@@ -32,5 +32,18 @@ Any other parameter goes to the lobby too. The lobby gets this page's address as
 `?embed=`, so the links its Share panel gives (the QR code, the code for another
 device, a stage's link) open this page with the shared world, not the lobby alone.
 
+The two pages keep their parameters the same afterwards, through messages (the lobby's
+`public/js/app/embed.js`):
+
+| Message | From → to | |
+| --- | --- | --- |
+| `{type: 'robot-lobby:url', params}` | lobby → page | the lobby's parameters as it opens and whenever it changes them (joined a server, took a stage); the page's address follows without a new history entry, so a reload or a copied link opens the same world |
+| `{type: 'robot-lobby:params', params}` | page → lobby | the page's parameters after back or forward; the lobby opens with them and answers with its own |
+
+`params` is a list of `[name, value]` pairs without the page's `lobby` and the lobby's
+`embed` and `online`. Each side takes messages only from the other's frame and origin
+and sends only to that origin, since `server` carries its access token. A request sent
+while the lobby is still opening is sent again when the lobby's first answer lacks it.
+
 The lobby is a page of another origin in a frame: its browser storage is its own, and
 WebXR in it needs the viewer itself served over HTTPS.
