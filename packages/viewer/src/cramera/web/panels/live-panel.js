@@ -44,6 +44,15 @@ export function offeredText(capabilities) {
 
 /**
  * @param {Object} status A recording's status.
+ * @returns {boolean} Whether the ended recording's bundle is written, so that a save
+ *   takes this run and not an older bundle.
+ */
+export function isWritten(status) {
+  return Boolean(status[RecordingStatusKey.SCENE_NAME]);
+}
+
+/**
+ * @param {Object} status A recording's status.
  * @returns {string} What the recording is doing, in a sentence.
  */
 export function recordingText(status) {
@@ -51,6 +60,7 @@ export function recordingText(status) {
   const size = `${frames} ${frames === 1 ? 'frame' : 'frames'}, ${(status[RecordingStatusKey.DURATION_SECONDS] ?? 0).toFixed(1)} s`;
   const state = status[RecordingStatusKey.STATE];
   if (state === RecordingState.RECORDING) return `Recording the run: ${size}.`;
+  if (state === RecordingState.FINALIZED && !isWritten(status)) return `The recording ended (${size}); writing it down, then it can be saved.`;
   if (state === RecordingState.FINALIZED) return `The recording ended (${size}); save it under a name to replay it, or discard it.`;
   return 'Not recording.';
 }
@@ -263,7 +273,7 @@ export class LivePanel {
     summary.textContent = recordingText(status);
     const controls = [summary];
     if (state === RecordingState.RECORDING) controls.push(this.#button('Stop recording', () => this.#actions.stopRecording()));
-    if (state === RecordingState.FINALIZED) controls.push(this.#saveForm(), this.#button('Discard', () => this.#actions.discardRecording()));
+    if (state === RecordingState.FINALIZED && isWritten(status)) controls.push(this.#saveForm(), this.#button('Discard', () => this.#actions.discardRecording()));
     this.#recording.replaceChildren(...controls);
   }
 

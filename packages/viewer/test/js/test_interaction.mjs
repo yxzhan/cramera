@@ -93,23 +93,25 @@ test('the scene\'s objects are listed and light up when picked', () => {
 
 // %% keyboard
 
-test('shortcuts play, step and jump, but not while a form control has focus', () => {
+test('shortcuts play, step, jump and focus, but not while a form control has focus', () => {
   const document = new FakeDocument();
   const calls = [];
-  const shortcuts = new KeyboardShortcuts(document.documentElement, new PlaybackActions(() => calls.push('toggle'), (frames) => calls.push(['step', frames]), (last) => calls.push(['jump', last])));
+  const shortcuts = new KeyboardShortcuts(document.documentElement, new PlaybackActions(() => calls.push('toggle'), (frames) => calls.push(['step', frames]), (last) => calls.push(['jump', last]), () => calls.push('focus')));
   const press = (key, target = document.body, modifiers = {}) => document.documentElement.dispatch('keydown', { key, target, ...modifiers });
   press(ShortcutKey.PLAY_PAUSE);
   press(ShortcutKey.PREVIOUS_FRAME);
   press(ShortcutKey.NEXT_FRAME);
   press(ShortcutKey.FIRST_FRAME);
   press(ShortcutKey.LAST_FRAME);
+  press(ShortcutKey.FOCUS_SELECTION);
+  press('F');
   press('x');
   press(ShortcutKey.PLAY_PAUSE, document.createElement('select'));
   press(ShortcutKey.NEXT_FRAME, document.body, { ctrlKey: true });
-  assert.deepEqual(calls, ['toggle', ['step', -1], ['step', 1], ['jump', false], ['jump', true]]);
+  assert.deepEqual(calls, ['toggle', ['step', -1], ['step', 1], ['jump', false], ['jump', true], 'focus', 'focus']);
   shortcuts.dispose();
   press(ShortcutKey.PLAY_PAUSE);
-  assert.equal(calls.length, 5);
+  assert.equal(calls.length, 7);
 });
 
 // %% highlight

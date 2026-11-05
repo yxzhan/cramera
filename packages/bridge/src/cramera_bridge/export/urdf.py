@@ -19,7 +19,9 @@ from uuid import UUID
 
 from cramera_bridge.exceptions import UnrepresentableJointLimits, UrdfSourceNotFound
 from cramera_bridge.export.assets import BundledAssets, MeshFormat, MeshReference
+from cramera_bridge.export.textures import SurfaceFile, TexturedSurface
 from cramera_bridge.names import class_path
+from krrood.ormatic.utils import classproperty
 from semantic_digital_twin.adapters.urdf import URDFParser
 from semantic_digital_twin.world import World
 from semantic_digital_twin.world_description.connections import (
@@ -329,7 +331,8 @@ class UrdfNumbers:
 @dataclass
 class LinkNames:
     """
-    Unique URDF link names for bodies, which may share a name in their world.
+    Unique URDF link names for bodies, which may share a name in their world, and for
+    the joint frames of connections that sit away from their child.
     """
 
     names: Dict[UUID, str] = field(default_factory=dict)
@@ -337,18 +340,52 @@ class LinkNames:
     The link name of every named body by its identity.
     """
 
+    connection_frames: Dict[UUID, str] = field(default_factory=dict)
+    """
+    The link name of every named connection frame by its connection's identity.
+    """
+
+    @classproperty
+    def connection_frame_suffix(cls) -> str:
+        """
+        :return: What a connection frame's link name adds to its child's link name.
+        """
+        return "_connection_frame"
+
     def name_of(self, body: Body) -> str:
         """
         :param body: A body of the document.
-        :return: Its full name, or, when another body of the document already carries
+        :return: Its full name, or, when another link of the document already carries
             that name, the name followed by its identity.
         """
-        if body.id in self.names:
-            return self.names[body.id]
-        name = str(body.name)
-        if name in self.names.values():
-            name = f"{name}__{body.id.hex}"
-        self.names[body.id] = name
+        if body.id not in self.names:
+            self.names[body.id] = self.unique(str(body.name), body.id)
+        return self.names[body.id]
+
+    def connection_frame_of(self, connection: Connection) -> str:
+        """
+        :param connection: A connection of the document.
+        :return: The link name of its joint frame: its child's link name followed by
+            :attr:`connection_frame_suffix`, or, when another link of the document
+            already carries that name, followed by the connection's identity as well.
+        """
+        if connection.id not in self.connection_frames:
+            self.connection_frames[connection.id] = self.unique(
+                f"{self.name_of(connection.child)}{self.connection_frame_suffix}",
+                connection.id,
+            )
+        return self.connection_frames[connection.id]
+
+    def unique(self, name: str, identity: UUID) -> str:
+        """
+        :param name: A wanted link name.
+        :param identity: The identity of the entity the link stands for.
+        :return: The name, or, when another link already carries it, the name followed
+            by the identity.
+        """
+        taken = set(self.names.values()) | set(self.connection_frames.values())
+        if name in taken:
+            return f"{name}__{identity.hex}"
         return name
 
 
@@ -438,7 +475,12 @@ class UrdfDocument:
 
     link_names: LinkNames = field(default_factory=LinkNames)
     """
-    The link name of every written body.
+    The link name of every written body and connection frame.
+    """
+
+    links: List[str] = field(default_factory=lambda: [ROOT_LINK])
+    """
+    The written link names in document order, :data:`ROOT_LINK` first.
     """
 
     movable_joints: List[str] = field(default_factory=list)
@@ -502,7 +544,7 @@ class UrdfDocument:
         return ModelReport(
             name=name,
             urdf=self.assets.relative(urdf),
-            links=[ROOT_LINK] + [self.link_names.name_of(body) for body in bodies],
+            links=list(self.links),
             movable_joints=list(self.movable_joints),
             posed_joints=list(self.posed_joints),
             missing=list(self.assets.missing),
@@ -520,11 +562,7 @@ class UrdfDocument:
 
         :param body: The body.
         """
-        link = ElementTree.SubElement(
-            self.root,
-            UrdfElement.LINK,
-            {UrdfAttribute.NAME: self.link_names.name_of(body)},
-        )
+        link = self.add_link_element(self.link_names.name_of(body))
         self.body_classes[self.link_names.name_of(body)] = class_path(type(body))
         for index, shape in enumerate(body.visual.shapes):
             visual = self.add_shape(link, UrdfElement.VISUAL, shape)
@@ -541,6 +579,16 @@ class UrdfDocument:
         for shape in body.collision.shapes:
             self.add_shape(link, UrdfElement.COLLISION, shape)
 
+    def add_link_element(self, name: str) -> ElementTree.Element:
+        """
+        :param name: The link name.
+        :return: The added link element, without geometry.
+        """
+        self.links.append(name)
+        return ElementTree.SubElement(
+            self.root, UrdfElement.LINK, {UrdfAttribute.NAME: name}
+        )
+
     def add_shape(
         self, link: ElementTree.Element, kind: UrdfElement, shape: Shape
     ) -> ElementTree.Element:
@@ -553,7 +601,10 @@ class UrdfDocument:
         element = ElementTree.SubElement(link, kind)
         UrdfNumbers.origin(element, shape.origin.to_np())
         geometry = ElementTree.SubElement(element, UrdfElement.GEOMETRY)
-        if isinstance(shape, Box):
+        surface = TexturedSurface.of(shape) if kind is UrdfElement.VISUAL else None
+        if surface is not None:
+            self.add_textured_surface(geometry, surface)
+        elif isinstance(shape, Box):
             ElementTree.SubElement(
                 geometry,
                 UrdfElement.BOX,
@@ -597,6 +648,26 @@ class UrdfDocument:
             },
         )
 
+    def add_textured_surface(
+        self, geometry: ElementTree.Element, surface: TexturedSurface
+    ) -> None:
+        """
+        Write a textured surface into the bundle and reference it.
+
+        :param geometry: The geometry element.
+        :param surface: The surface, already at its shape's scale.
+        """
+        written = SurfaceFile(self.assets).write(
+            [surface.mesh],
+            self.assets.folder_for(surface.source, self.mesh_directory),
+            surface.source.stem,
+        )
+        ElementTree.SubElement(
+            geometry,
+            UrdfElement.MESH,
+            {UrdfAttribute.FILENAME: self.assets.relative(written)},
+        )
+
     # %% joints
 
     def add_root_joint(self, body: Body, matrix: numpy.ndarray) -> None:
@@ -606,27 +677,18 @@ class UrdfDocument:
         :param body: The body.
         :param matrix: The pose it is fixed at.
         """
-        joint = ElementTree.SubElement(
-            self.root,
-            UrdfElement.JOINT,
-            {
-                UrdfAttribute.NAME: f"{ROOT_LINK}_to_{self.link_names.name_of(body)}",
-                UrdfAttribute.TYPE: UrdfJointType.FIXED,
-            },
+        name = self.link_names.name_of(body)
+        self.add_joint_element(
+            f"{ROOT_LINK}_to_{name}", UrdfJointType.FIXED, ROOT_LINK, name, matrix
         )
-        ElementTree.SubElement(
-            joint, UrdfElement.PARENT, {UrdfAttribute.LINK: ROOT_LINK}
-        )
-        ElementTree.SubElement(
-            joint,
-            UrdfElement.CHILD,
-            {UrdfAttribute.LINK: self.link_names.name_of(body)},
-        )
-        UrdfNumbers.origin(joint, matrix)
 
     def add_joint(self, connection: Connection) -> None:
         """
         Add the joint a connection becomes.
+
+        A joint driven by one value whose child sits away from the joint frame moves a
+        link of its own at that frame, to which the child is fixed, so the child link
+        keeps its body's frame.
 
         :param connection: The connection between two written bodies.
         :raises UnrepresentableJointLimits: When a limited joint lacks finite limits.
@@ -634,41 +696,70 @@ class UrdfDocument:
         joint_type = self.joint_type(connection)
         name = str(connection.name)
         self.connection_classes[name] = class_path(type(connection))
+        parent = self.link_names.name_of(connection.parent)
+        child = self.link_names.name_of(connection.child)
+        if joint_type not in AXIS_JOINT_TYPES:
+            self.add_joint_element(
+                name, joint_type, parent, child, connection.origin.to_np()
+            )
+            if joint_type is UrdfJointType.FLOATING:
+                self.posed_joints.append(name)
+            return
+        connection_T_child = connection.connection_T_child_expression.to_np()
+        moved = child
+        if not numpy.allclose(connection_T_child, numpy.eye(4)):
+            moved = self.link_names.connection_frame_of(connection)
+            self.add_link_element(moved)
+            self.add_joint_element(
+                f"{moved}_to_{child}",
+                UrdfJointType.FIXED,
+                moved,
+                child,
+                connection_T_child,
+            )
+        # the joint value is applied on top of the origin, so the origin is the pose at
+        # value zero
+        joint = self.add_joint_element(
+            name,
+            joint_type,
+            parent,
+            moved,
+            connection.parent_T_connection_expression.to_np(),
+        )
+        ElementTree.SubElement(
+            joint,
+            UrdfElement.AXIS,
+            {UrdfAttribute.TRANSLATION: UrdfNumbers.text(connection.axis.to_np()[:3])},
+        )
+        self.movable_joints.append(name)
+        if joint_type in LIMITED_JOINT_TYPES:
+            self.add_limit(joint, connection)
+
+    def add_joint_element(
+        self,
+        name: str,
+        joint_type: UrdfJointType,
+        parent: str,
+        child: str,
+        origin: numpy.ndarray,
+    ) -> ElementTree.Element:
+        """
+        :param name: The joint name.
+        :param joint_type: The joint type.
+        :param parent: The parent link name.
+        :param child: The child link name.
+        :param origin: The child's pose relative to the parent at joint value zero.
+        :return: The added joint element.
+        """
         joint = ElementTree.SubElement(
             self.root,
             UrdfElement.JOINT,
             {UrdfAttribute.NAME: name, UrdfAttribute.TYPE: joint_type},
         )
-        ElementTree.SubElement(
-            joint,
-            UrdfElement.PARENT,
-            {UrdfAttribute.LINK: self.link_names.name_of(connection.parent)},
-        )
-        ElementTree.SubElement(
-            joint,
-            UrdfElement.CHILD,
-            {UrdfAttribute.LINK: self.link_names.name_of(connection.child)},
-        )
-        if joint_type in AXIS_JOINT_TYPES:
-            # the joint value is applied on top of the origin, so the origin is the
-            # pose at value zero
-            UrdfNumbers.origin(joint, connection.parent_T_connection_expression.to_np())
-            ElementTree.SubElement(
-                joint,
-                UrdfElement.AXIS,
-                {
-                    UrdfAttribute.TRANSLATION: UrdfNumbers.text(
-                        connection.axis.to_np()[:3]
-                    )
-                },
-            )
-            self.movable_joints.append(name)
-        else:
-            UrdfNumbers.origin(joint, connection.origin.to_np())
-        if joint_type in LIMITED_JOINT_TYPES:
-            self.add_limit(joint, connection)
-        if joint_type is UrdfJointType.FLOATING:
-            self.posed_joints.append(name)
+        ElementTree.SubElement(joint, UrdfElement.PARENT, {UrdfAttribute.LINK: parent})
+        ElementTree.SubElement(joint, UrdfElement.CHILD, {UrdfAttribute.LINK: child})
+        UrdfNumbers.origin(joint, origin)
+        return joint
 
     @staticmethod
     def add_limit(joint: ElementTree.Element, connection: ActiveConnection1DOF) -> None:

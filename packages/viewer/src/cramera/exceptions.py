@@ -303,3 +303,47 @@ class DefaultSceneNotExported(ViewerError):
             f"The default scene {self.name!r} is not among the exported bundles: "
             f"{', '.join(self.exported)}."
         )
+
+
+# %% remote viewers
+
+
+@dataclass
+class SshConnectionFailed(ViewerError):
+    """
+    An SSH connection to the machine serving a viewer that could not be opened.
+    """
+
+    destination: str
+    """
+    The destination given to ``ssh``, such as ``user@server``.
+    """
+
+    exit_status: int
+    """
+    The status ``ssh`` exited with.
+    """
+
+    def message(self) -> str:
+        return (
+            f"ssh could not connect to {self.destination} (exit status "
+            f"{self.exit_status}); its own message above says why."
+        )
+
+
+@dataclass
+class RemoteViewerDidNotStart(ViewerError):
+    """
+    A viewer started on the far side of an SSH connection that ended before it served.
+    """
+
+    command: str
+    """
+    The command that was to start it.
+    """
+
+    def message(self) -> str:
+        return (
+            f"The viewer started with {self.command!r} ended before it served; its own "
+            f"message above says why."
+        )

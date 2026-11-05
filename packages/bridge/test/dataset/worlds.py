@@ -7,6 +7,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy
+import PIL.Image
+import trimesh
 from typing_extensions import List
 
 from cramera_bridge.performing import TaskContext
@@ -26,6 +29,7 @@ from semantic_digital_twin.world_description.geometry import (
     Cylinder,
     Mesh,
     Scale,
+    Texture,
 )
 from semantic_digital_twin.world_description.shape_collection import ShapeCollection
 from semantic_digital_twin.world_description.world_entity import Body
@@ -158,6 +162,126 @@ class KitchenWorld:
             frame=frame,
             milk_connection=milk_connection,
         )
+
+
+# %% textured surfaces
+
+BRICKS_TEXTURE = Path(__file__).parent / "textures" / "bricks.png"
+"""
+A small texture image.
+"""
+
+UV_MAPPED_MESH = MESHES / "uv_mapped" / "panel.obj"
+"""
+An OBJ mesh with texture coordinates but no material library, as MuJoCo scenes ship
+them.
+"""
+
+
+@dataclass
+class TexturedWorld:
+    """
+    A world with a textured wall, a textured panel whose texture its mesh file does not
+    name, and the same panel without a texture, each fixed to the root.
+    """
+
+    world: World
+    """
+    The world.
+    """
+
+    wall: Body
+    """
+    A box carrying :data:`BRICKS_TEXTURE`, repeated per meter.
+    """
+
+    panel: Body
+    """
+    A body drawn from :data:`UV_MAPPED_MESH` with :data:`BRICKS_TEXTURE` applied.
+    """
+
+    bare_panel: Body
+    """
+    A body drawn from :data:`UV_MAPPED_MESH` alone.
+    """
+
+    @classmethod
+    def build(cls) -> TexturedWorld:
+        """
+        :return: A new textured world.
+        """
+        world = World()
+        root = Body(name=PrefixedName("map"))
+        wall = Body(
+            name=PrefixedName("wall", "kitchen"),
+            visual=ShapeCollection(
+                shapes=[
+                    Box(
+                        scale=Scale(2.0, 0.1, 1.0),
+                        texture=Texture(
+                            file_path=str(BRICKS_TEXTURE),
+                            repeat=(3.0, 3.0),
+                            uniform=True,
+                        ),
+                    )
+                ]
+            ),
+        )
+        panel = Body(
+            name=PrefixedName("panel", "kitchen"),
+            visual=ShapeCollection(
+                shapes=[
+                    Mesh.from_file(
+                        file_path=str(UV_MAPPED_MESH),
+                        texture_file_path=str(BRICKS_TEXTURE),
+                    )
+                ]
+            ),
+        )
+        bare_panel = Body(
+            name=PrefixedName("bare_panel", "kitchen"),
+            visual=ShapeCollection(shapes=[Mesh(filename=str(UV_MAPPED_MESH))]),
+        )
+        with world.modify_world():
+            world.add_kinematic_structure_entity(root)
+            for body in (wall, panel, bare_panel):
+                world.add_connection(FixedConnection(parent=root, child=body))
+        return cls(world=world, wall=wall, panel=panel, bare_panel=bare_panel)
+
+
+@dataclass(frozen=True)
+class WrittenSurface:
+    """
+    A binary glTF file holding one textured surface, read back.
+    """
+
+    path: Path
+    """
+    The file.
+    """
+
+    def mesh(self) -> trimesh.Trimesh:
+        """
+        :return: The file's only mesh.
+        """
+        [mesh] = trimesh.load_scene(str(self.path)).geometry.values()
+        return mesh
+
+    def image(self) -> numpy.ndarray:
+        """
+        :return: The pixels of the mesh's texture.
+        """
+        return numpy.asarray(
+            self.mesh().visual.material.baseColorTexture.convert("RGB")
+        )
+
+    @staticmethod
+    def pixels_of(image_file: Path) -> numpy.ndarray:
+        """
+        :param image_file: An image file.
+        :return: Its pixels.
+        """
+        return numpy.asarray(PIL.Image.open(image_file).convert("RGB"))
 
 
 # %% robot

@@ -216,6 +216,27 @@ resolutions, the query steps and the perception images of the publisher at
 `127.0.0.1:8765`, and nothing that changes the run. Stopping and saving the recording
 stay with the machine.
 
+### Watch a remote server or container
+
+Every page reads the live publisher through the viewer, so the viewer's port is the
+only one to reach. `cramera connect` does that from a laptop through your own `ssh`:
+
+```bash
+cramera connect user@server                               # viewer on the server itself
+cramera connect user@server --container my-cram --start   # start one inside a container
+cramera connect user@server --container my-cram --local-port 18711
+```
+
+It opens the browser at `http://127.0.0.1:8711` (or `--local-port`) and closes the
+connection on Ctrl-C. Keys and `~/.ssh/config` stay with `ssh`. Nothing on the server
+listens beyond its loopback address: the viewer's port is forwarded, or, with
+`--container`, each connection is carried by `docker exec -i <container> cramera pipe`
+into the container, so the container needs no published ports. The page counts as the
+server's own and keeps full control: stepping, stopping and saving. `--start` also
+starts the viewer there and ends it with the connection; `--remote-command` says how
+the server runs `cramera` when it is not on its `PATH`, such as
+`--remote-command /opt/venv/bin/cramera`.
+
 ### Serve behind a proxy
 
 A server reached over the internet serves the viewer through a reverse proxy on the
@@ -275,6 +296,7 @@ cramera-record-classes ~/.cramera/scenes --scene my_recording
 | Command | What it does |
 | --- | --- |
 | `cramera` | Serve the viewer. `--lan` serves the network too (see [Watch from a phone](#watch-from-a-phone)), `--public-origin ORIGIN` a password-checking proxy (see [Serve behind a proxy](#serve-behind-a-proxy)). `--logo FILE` (or `CRAMERA_LOGO`) shows another `.png`, `.svg` or `.jpg` instead of the AICOR logo in every page's top bar, `--logo-text TEXT` says what it shows. |
+| `cramera connect USER@SERVER` | Open a viewer that runs on another machine, or with `--container NAME` in a container there, in this machine's browser through `ssh` (see [Watch a remote server or container](#watch-a-remote-server-or-container)). |
 | `cramera-shot URL OUT.png` | Take a screenshot in headless Chrome (`--browser chrome`, needs `chromedriver`) or Firefox (`--browser firefox`, needs `geckodriver`) once the page reports its scene as shown; exits 1 when it fails. |
 | `cramera-export-site OUT --scenes DIR [--plugin NAME] [--logo FILE]` | Write the viewer and the bundles of a directory as a static site, for any web server, with the browser files of the named installed plugins and the given logo. |
 | `cramera-upgrade-bundle SRC DST` | Copy a bundle and rewrite its documents in the current format, optionally with new labels for the scene picker. |

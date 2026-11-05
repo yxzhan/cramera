@@ -88,6 +88,13 @@ export class ScenePicking {
   #selected = null;
 
   /**
+   * Called with the box around the body a double click hit, empty when the hit belongs
+   * to none, and the point hit.
+   * @type {function(THREE.Box3, THREE.Vector3): void}
+   */
+  #focus;
+
+  /**
    * The canvas listeners, to remove them again.
    * @type {Array<[string, function(PointerEvent): void]>}
    */
@@ -96,13 +103,17 @@ export class ScenePicking {
   /**
    * @param {import('./scene-view.js').SceneView} view The view whose content is picked.
    * @param {import('../core/event-bus.js').EventBus} bus The bus the selection is published on.
+   * @param {function(THREE.Box3, THREE.Vector3): void} focus Called with the box around the
+   *   body a double click hit, empty when the hit belongs to none, and the point hit.
    */
-  constructor(view, bus) {
+  constructor(view, bus, focus = () => {}) {
     this.#view = view;
     this.#bus = bus;
+    this.#focus = focus;
     this.#listeners = [
       ['pointerdown', (event) => { this.#pressed = { x: event.clientX, y: event.clientY }; }],
       ['pointerup', (event) => this.#release(event)],
+      ['dblclick', (event) => this.#focusOn(event)],
     ];
     for (const [type, listener] of this.#listeners) view.renderer.domElement.addEventListener(type, listener);
   }
@@ -114,6 +125,26 @@ export class ScenePicking {
     const pressed = this.#pressed;
     this.#pressed = null;
     if (!pressed || Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y) > CLICK_TOLERANCE) return;
+    this.select(this.#hit(event)?.object ?? null);
+  }
+
+  /**
+   * Select what a double click hit and move the camera onto it; a double click on
+   * nothing leaves the selection and the camera as they are.
+   * @param {MouseEvent} event The double click.
+   */
+  #focusOn(event) {
+    const hit = this.#hit(event);
+    if (!hit) return;
+    this.select(hit.object);
+    this.#focus(this.selectedBounds(), hit.point);
+  }
+
+  /**
+   * @param {MouseEvent} event A click.
+   * @returns {THREE.Intersection|null} The nearest visible content under the pointer, or null.
+   */
+  #hit(event) {
     const canvas = this.#view.renderer.domElement.getBoundingClientRect();
     const pointer = new THREE.Vector2(
       ((event.clientX - canvas.left) / canvas.width) * 2 - 1,
@@ -121,8 +152,14 @@ export class ScenePicking {
     );
     const raycaster = new THREE.Raycaster();
     raycaster.setFromCamera(pointer, this.#view.camera);
-    const hit = raycaster.intersectObject(this.#view.content, true).find((candidate) => candidate.object.visible);
-    this.select(hit ? hit.object : null);
+    return raycaster.intersectObject(this.#view.content, true).find((candidate) => candidate.object.visible) ?? null;
+  }
+
+  /**
+   * @returns {THREE.Box3} The box around the selected link or object; empty when nothing is selected.
+   */
+  selectedBounds() {
+    return this.#selected ? ownBounds(this.#selected) : new THREE.Box3();
   }
 
   /**

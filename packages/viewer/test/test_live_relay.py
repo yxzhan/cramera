@@ -19,7 +19,12 @@ from cramera.http.messages import Header, HttpMethod, MediaType, Request, Respon
 from cramera.http.origin import KEY_COOKIE, KEY_PARAMETER, OriginPolicy
 from cramera.http.routing import ExactRoute, Router
 from cramera.http.server import HttpServer, RequestAnswerer, ViewerHttpServer
-from cramera.live_relay import RELAYED_CHANGES, RELAYED_READS, LiveRelay
+from cramera.live_relay import (
+    RELAYED_CHANGES,
+    RELAYED_READS,
+    ChangeReach,
+    LiveRelay,
+)
 from cramera_protocol.live import LIVE_HOST, LIVE_PORT, LiveRoute
 from cramera_protocol.live_messages import LiveParameter
 from cramera_protocol.viewer import ErrorKey, ViewerRoute
@@ -258,15 +263,53 @@ def test_a_phone_may_not_change_the_run_through_the_relay(
     assert "only watch" in json.loads(answer.body)[ErrorKey.ERROR]
 
 
-def test_this_machine_does_not_change_the_run_through_the_relay_either(
-    catalog, locations, relay
-):
-    request = Request(
-        method=HttpMethod.POST,
-        path=f"{ViewerRoute.LIVE_RELAY}recording/stop",
-        headers={Header.HOST: "127.0.0.1:8711"},
+def forwarded(route: str, method=HttpMethod.GET, body: bytes = b"") -> Request:
+    """
+    :param route: A live route.
+    :return: A request for the route through the relay from a page whose port a laptop
+        forwards to the viewer: the page names the laptop's loopback port, and the
+        forwarding arrives from this machine's loopback address.
+    """
+    return Request(
+        method=method,
+        path=f"{ViewerRoute.LIVE_RELAY}{route.lstrip('/')}",
+        headers={
+            Header.HOST: "localhost:18711",
+            Header.ORIGIN: "http://localhost:18711",
+            Header.CONTENT_TYPE: MediaType.JSON,
+        },
+        body=body,
     )
-    answer = viewer(catalog, locations, relay, OriginPolicy()).answer(request)
+
+
+@pytest.mark.parametrize("route", sorted(RELAYED_CHANGES))
+def test_this_machine_changes_the_run_through_the_relay(
+    catalog, locations, relay, route
+):
+    body = b'{"name": "run"}'
+    answer = viewer(catalog, locations, relay, OriginPolicy()).answer(
+        forwarded(route, HttpMethod.POST, body)
+    )
+    assert answer.status is HTTPStatus.OK
+    assert json.loads(answer.body)["route"] == route
+    assert json.loads(answer.body)["body"] == body.decode()
+
+
+def test_a_forwarded_page_reads_the_run_through_the_relay(catalog, locations, relay):
+    answer = viewer(catalog, locations, relay, OriginPolicy()).answer(
+        forwarded(LiveRoute.STATE)
+    )
+    assert answer.status is HTTPStatus.OK
+    assert json.loads(answer.body)["route"] == LiveRoute.STATE
+
+
+@pytest.mark.parametrize("route", [LiveRoute.QUERY, LiveRoute.MOVE])
+def test_this_machine_makes_no_other_change_through_the_relay(
+    catalog, locations, relay, route
+):
+    answer = viewer(catalog, locations, relay, OriginPolicy()).answer(
+        forwarded(route, HttpMethod.POST)
+    )
     assert answer.status is HTTPStatus.METHOD_NOT_ALLOWED
 
 
@@ -307,11 +350,23 @@ def through_proxy(route: str, body: bytes = b"") -> Request:
     )
 
 
-def test_the_relay_carries_only_the_query_steps_controls():
-    assert RELAYED_CHANGES == {LiveRoute.QUERY_STEPS_NEXT, LiveRoute.QUERY_STEPS_MODE}
+CONTROLLING_DEVICE_CHANGES = sorted(
+    route
+    for route, reach in RELAYED_CHANGES.items()
+    if reach is ChangeReach.CONTROLLING_DEVICES
+)
+"""
+The relayed changes devices that control runs may make.
+"""
 
 
-@pytest.mark.parametrize("route", sorted(RELAYED_CHANGES))
+def test_devices_that_control_runs_may_only_step_the_run():
+    assert CONTROLLING_DEVICE_CHANGES == sorted(
+        [LiveRoute.QUERY_STEPS_NEXT, LiveRoute.QUERY_STEPS_MODE]
+    )
+
+
+@pytest.mark.parametrize("route", CONTROLLING_DEVICE_CHANGES)
 def test_a_page_behind_the_proxy_steps_the_run_through_the_relay(
     catalog, locations, relay, route
 ):

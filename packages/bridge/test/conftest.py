@@ -73,7 +73,7 @@ def tests_needing_cram() -> list:
 if any(importlib.util.find_spec(package) is None for package in CRAM_PACKAGES):
     collect_ignore = tests_needing_cram()
 else:
-    from .dataset.worlds import KitchenWorld, RobotWorld
+    from .dataset.worlds import KitchenWorld, RobotWorld, TexturedWorld
 
     @pytest.fixture
     def kitchen() -> KitchenWorld:
@@ -81,6 +81,13 @@ else:
         :return: A new kitchen world.
         """
         return KitchenWorld.build()
+
+    @pytest.fixture
+    def textured() -> TexturedWorld:
+        """
+        :return: A new world of textured surfaces.
+        """
+        return TexturedWorld.build()
 
     @pytest.fixture(scope="session")
     def robot_world() -> RobotWorld:

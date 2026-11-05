@@ -18,17 +18,16 @@ const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 // %% addresses
 
 /**
- * A publisher answers pages of this machine's loopback names only, so a page opened at
- * another address, as a phone opens the viewer, reads the publisher at the default
- * address through the viewer, which relays what the page reads and nothing that
- * changes the run.
- * @param {string} page The address of the page.
+ * The page reads the publisher at the default address through the viewer, so the
+ * viewer's port is the only one a page has to reach, whether a phone opens it or a
+ * laptop forwards it from a remote server; the viewer lets each page change the run as
+ * far as it lets that page control runs.
  * @param {string} address A live publisher's address, as the page or the Live panel names it.
  * @param {string} relay The address of the viewer's relay of the publisher.
  * @returns {string} The address the page reads the publisher at.
  */
-export function readAddressOf(page, address, relay) {
-  if (LOOPBACK_HOSTS.has(new URL(page).hostname) || !URL.canParse(address)) return address;
+export function readAddressOf(address, relay) {
+  if (!URL.canParse(address)) return address;
   const publisher = new URL(address);
   const relayed = LOOPBACK_HOSTS.has(publisher.hostname) && publisher.port === new URL(DEFAULT_LIVE_ADDRESS).port;
   return relayed ? relay : address;

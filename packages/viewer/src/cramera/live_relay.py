@@ -2,17 +2,20 @@
 What the viewer's page reads from the live publisher on this machine, relayed through
 the viewer's own origin.
 
-The publisher answers this machine only, since a query runs code. A page opened from
-another device of the network, such as a phone, reaches only the viewer, so the viewer
-reads the publisher for it: the observations the page follows a run by. Of the changes,
-only stepping through the run's queries is relayed, and only for devices the viewer lets
-control runs.
+The publisher answers this machine only, since a query runs code. The page reads the
+publisher at its default address through the viewer, so the viewer's port is the only
+one a page has to reach: a phone of the network does, and so does a laptop that forwards
+that port from a remote server. The observations the page follows a run by are relayed
+for every page the viewer answers; the changes the page makes are relayed for this
+machine, and stepping through the run's queries also for devices the viewer lets control
+runs.
 """
 
 from __future__ import annotations
 
 from contextlib import closing
 from dataclasses import dataclass
+from enum import StrEnum
 from http import HTTPStatus
 from http.client import HTTPConnection, HTTPException
 from urllib.parse import urlencode
@@ -44,14 +47,36 @@ The routes the page reads to follow a run, each with the query parameters it tak
 other route, and no other parameter, is relayed.
 """
 
-RELAYED_CHANGES: FrozenSet[LiveRoute] = frozenset(
-    {LiveRoute.QUERY_STEPS_NEXT, LiveRoute.QUERY_STEPS_MODE}
-)
-"""
-The changes relayed with their body: letting a held run carry on and choosing whether it
-is held at every query.
 
-Other devices make them only where the viewer lets them control runs.
+class ChangeReach(StrEnum):
+    """
+    Who may make a change relayed to the publisher.
+    """
+
+    THIS_MACHINE = "this_machine"
+    """
+    Only pages of the machine that serves the viewer.
+    """
+
+    CONTROLLING_DEVICES = "controlling_devices"
+    """
+    Also other devices the viewer lets control runs.
+    """
+
+
+RELAYED_CHANGES: Mapping[LiveRoute, ChangeReach] = {
+    LiveRoute.RECORDING_STOP: ChangeReach.THIS_MACHINE,
+    LiveRoute.RECORDING_SAVE: ChangeReach.THIS_MACHINE,
+    LiveRoute.RECORDING_DISCARD: ChangeReach.THIS_MACHINE,
+    LiveRoute.RESOLUTION_EXECUTION: ChangeReach.THIS_MACHINE,
+    LiveRoute.QUERY_STEPS_NEXT: ChangeReach.CONTROLLING_DEVICES,
+    LiveRoute.QUERY_STEPS_MODE: ChangeReach.CONTROLLING_DEVICES,
+}
+"""
+The changes the page makes, relayed with their body, each with who may make it: ending,
+saving and discarding the recording and executing a resolution stay with this machine;
+letting a held run carry on and choosing whether it is held at every query are also
+offered to devices that control runs.
 """
 
 RELAY_TIMEOUT = 30.0
@@ -100,7 +125,7 @@ class LiveRelay:
     def routes(self) -> List[Route]:
         """
         :return: The viewer's routes of the relay: every read below its prefix, and one
-            route for each relayed change, which other devices may make.
+            route for each relayed change, offered to whom :data:`RELAYED_CHANGES` names.
         """
         reads: List[Route] = [
             PrefixRoute(HttpMethod.GET, ViewerRoute.LIVE_RELAY, self.answer)
@@ -110,9 +135,9 @@ class LiveRelay:
                 HttpMethod.POST,
                 f"{ViewerRoute.LIVE_RELAY}{route.lstrip('/')}",
                 self.change,
-                remote_changes=True,
+                remote_changes=reach is ChangeReach.CONTROLLING_DEVICES,
             )
-            for route in sorted(RELAYED_CHANGES)
+            for route, reach in sorted(RELAYED_CHANGES.items())
         ]
         return reads + changes
 

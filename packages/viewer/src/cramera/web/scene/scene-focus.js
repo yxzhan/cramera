@@ -116,6 +116,14 @@ export function focusBounds(content, regions, keys) {
   return box;
 }
 
+/**
+ * @param {THREE.Box3} box What the camera glides onto.
+ * @returns {number} How far from the box's centre the camera stands to frame it.
+ */
+export function framingDistance(box) {
+  return Math.max(GlideSetting.NEAREST, box.getSize(new THREE.Vector3()).length() * GlideSetting.SPAN);
+}
+
 export class CameraGlide {
   /**
    * The view whose camera glides.
@@ -147,17 +155,43 @@ export class CameraGlide {
     if (box.isEmpty()) return false;
     const { camera, controls } = this.#view;
     const center = box.getCenter(new THREE.Vector3());
-    const distance = Math.max(GlideSetting.NEAREST, box.getSize(new THREE.Vector3()).length() * GlideSetting.SPAN);
     const direction = camera.position.clone().sub(controls.target).normalize();
-    this.#glide = {
-      seconds,
-      elapsed: 0,
-      fromTarget: controls.target.clone(),
-      toTarget: center,
-      fromCamera: camera.position.clone(),
-      toCamera: center.clone().addScaledVector(direction, distance),
-    };
+    this.#start(center, center.clone().addScaledVector(direction, framingDistance(box)), seconds);
     return true;
+  }
+
+  /**
+   * Start gliding onto a point, keeping the direction the camera looks from and how far
+   * it stands from what it looks at.
+   * @param {THREE.Vector3} point What the camera glides onto.
+   * @param {number} seconds How long the glide takes.
+   */
+  glideToPoint(point, seconds = GlideSetting.SECONDS) {
+    const { camera, controls } = this.#view;
+    this.#start(point.clone(), camera.position.clone().sub(controls.target).add(point), seconds);
+  }
+
+  /**
+   * Glide onto what a double click hit: onto the body when the camera comes nearer to
+   * frame it, else onto the point hit, so a double click never moves the camera away.
+   * @param {THREE.Box3} box The box around the body hit; empty when the hit belongs to none.
+   * @param {THREE.Vector3} point The point hit.
+   */
+  glideOnto(box, point) {
+    const { camera, controls } = this.#view;
+    const framing = box.isEmpty() ? Infinity : framingDistance(box);
+    if (framing < camera.position.distanceTo(controls.target)) this.glideTo(box);
+    else this.glideToPoint(point);
+  }
+
+  /**
+   * @param {THREE.Vector3} target What the camera looks at in the end.
+   * @param {THREE.Vector3} position Where the camera stands in the end.
+   * @param {number} seconds How long the glide takes.
+   */
+  #start(target, position, seconds) {
+    const { camera, controls } = this.#view;
+    this.#glide = { seconds, elapsed: 0, fromTarget: controls.target.clone(), toTarget: target, fromCamera: camera.position.clone(), toCamera: position };
   }
 
   /**

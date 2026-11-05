@@ -1,5 +1,5 @@
 """
-``cramera``: serve the viewer.
+``cramera``: serve the viewer, or, with a subcommand, connect to a viewer elsewhere.
 """
 
 from __future__ import annotations
@@ -12,11 +12,10 @@ import signal
 import sys
 import webbrowser
 from dataclasses import dataclass, field
-from enum import StrEnum
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from typing_extensions import List, Mapping, Optional, Sequence
+from typing_extensions import Callable, List, Mapping, Optional, Sequence
 
 from cramera.application import ViewerApplication
 from cramera.branding import Branding
@@ -24,80 +23,18 @@ from cramera.exceptions import LogoNotFound, UnsupportedLogo
 from cramera.http.addresses import EVERY_ADDRESS, LOOPBACK
 from cramera.http.origin import KEY_PARAMETER, LOCAL_HOSTS, OriginPolicy
 from cramera.http.server import HttpServer, RequestAnswerer
+from cramera.lifeline import Lifeline
 from cramera.locations import DataLocations
 from cramera.network_key import NetworkKey
 from cramera.occupant import PortOccupant
 from cramera.plugins import PluginLoader
+from cramera.remote_connection import connect, pipe
 from cramera.scenes import SceneCatalog, SceneDirectory, SceneSource
+from cramera.viewer_options import DEFAULT_PORT, Announcement, Option, Subcommand
 
 logger = logging.getLogger(__name__)
 """
 The logger of the command.
-"""
-
-
-class Option(StrEnum):
-    """
-    The command's options.
-    """
-
-    HOST = "--host"
-    """
-    The address to listen on.
-    """
-
-    LAN = "--lan"
-    """
-    Listen on every address of this machine, so other devices of its network, such as a
-    phone, can watch.
-    """
-
-    PUBLIC_ORIGIN = "--public-origin"
-    """
-    The origin a password-checking reverse proxy on this machine serves the viewer at,
-    such as ``https://cramera.informatik.uni-bremen.de``; its pages may start, stop and
-    step runs.
-    """
-
-    PORT = "--port"
-    """
-    The port to listen on.
-    """
-
-    SCENES = "--scenes"
-    """
-    A further shared scenes directory.
-    """
-
-    DEMO_SCENES = "--demo-scenes"
-    """
-    A directory of demo scenes.
-    """
-
-    NO_BROWSER = "--no-browser"
-    """
-    Do not open the viewer in a browser.
-    """
-
-    KEEP_RUNNING = "--keep-running"
-    """
-    Fail when the port is in use instead of stopping the viewer that holds it.
-    """
-
-    LOGO = "--logo"
-    """
-    An image the top bar shows instead of the AICOR logo.
-    """
-
-    LOGO_TEXT = "--logo-text"
-    """
-    What that image shows, for people who cannot see it.
-    """
-
-
-DEFAULT_PORT = 8711
-"""
-The port the viewer listens on unless told otherwise.
 """
 
 # %% configuration
@@ -155,6 +92,11 @@ class ViewerConfiguration:
     None when pages reach the viewer directly.
     """
 
+    ends_with_input: bool = False
+    """
+    Whether the viewer ends once its standard input closes.
+    """
+
     @classmethod
     def from_arguments(
         cls,
@@ -183,6 +125,7 @@ class ViewerConfiguration:
         parser.add_argument(Option.KEEP_RUNNING, action="store_true")
         parser.add_argument(Option.LOGO, type=Path, default=None)
         parser.add_argument(Option.LOGO_TEXT, default=None)
+        parser.add_argument(Option.LIFELINE, action="store_true")
         parsed = parser.parse_args(list(arguments))
         # a logo that cannot be shown is a usage error of the command, said as one
         try:
@@ -213,6 +156,7 @@ class ViewerConfiguration:
             replace_viewer=not parsed.keep_running,
             branding=branding,
             public_origin=public_origin,
+            ends_with_input=parsed.lifeline,
         )
 
     def scene_directories(self) -> List[SceneDirectory]:
@@ -339,17 +283,35 @@ def origin_of(address: str) -> Optional[str]:
 
 def main(arguments: Optional[Sequence[str]] = None) -> None:
     """
-    Serve the viewer until the process is interrupted or terminated.
+    Run the subcommand the arguments start with, or else serve the viewer.
 
     :param arguments: The command-line arguments; the process arguments when None.
     """
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+    given = list(arguments if arguments is not None else sys.argv[1:])
+    subcommands: Mapping[str, Callable[[Sequence[str]], None]] = {
+        Subcommand.CONNECT: connect,
+        Subcommand.PIPE: pipe,
+    }
+    if given and given[0] in subcommands:
+        subcommands[given[0]](given[1:])
+        return
+    serve(given)
+
+
+def serve(arguments: Sequence[str]) -> None:
+    """
+    Serve the viewer until the process is interrupted or terminated, or, when asked to,
+    until its standard input closes.
+
+    :param arguments: The command-line arguments without the program name.
+    """
     locations = DataLocations.from_environment(os.environ, Path.home())
-    configuration = ViewerConfiguration.from_arguments(
-        arguments if arguments is not None else sys.argv[1:], locations, os.environ
-    )
+    configuration = ViewerConfiguration.from_arguments(arguments, locations, os.environ)
     stop_signals = {signal.SIGINT, signal.SIGTERM}
     signal.pthread_sigmask(signal.SIG_BLOCK, stop_signals)
+    if configuration.ends_with_input:
+        Lifeline(sys.stdin.fileno()).watch()
     try:
         server = configuration.start_server()
     except OSError as error:
@@ -362,7 +324,7 @@ def main(arguments: Optional[Sequence[str]] = None) -> None:
         )
         sys.exit(1)
     try:
-        logger.info("cramera serves %s", server.url())
+        logger.info("%s %s", Announcement.SERVING, server.url())
         configuration.announce_network(server)
         if configuration.open_browser:
             webbrowser.open(server.url())

@@ -20,11 +20,14 @@ from cramera_bridge.exceptions import (
     EmptyRecording,
     InvalidFrameRange,
     NoRecording,
+    RecordingNotWritten,
     SceneNameTaken,
     SharedScenesUnavailable,
 )
+from cramera_bridge.live.publisher import LivePublisher
 from cramera_bridge.live.recording import FrameRange
 from cramera_bridge.live.recording_storage import RecordingStorage
+from cramera_bridge.questions.workspace_classes import WorkspaceClassIndex
 from cramera_bridge.robots import RobotRoster
 from cramera_protocol.bundle.files import BundleFile
 from cramera_protocol.bundle.index import (
@@ -260,6 +263,28 @@ def test_saving_before_finishing_is_refused(publisher, kitchen):
     carry_milk(kitchen, publisher)
     with pytest.raises(NoRecording):
         publisher.save_recording(RecordingSaveRequest(name="early"))
+
+
+def test_saving_while_the_bundle_is_written_is_refused(publisher, kitchen, locations):
+    carry_milk(kitchen, publisher)
+    publisher.finish_recording()
+    publisher.recording.start()
+    carry_milk(kitchen, publisher)
+    publisher.recording.finish()
+    with pytest.raises(RecordingNotWritten):
+        publisher.save_recording(RecordingSaveRequest(name="early"))
+    assert not (locations.local_scenes / "early").exists()
+    assert (locations.local_scenes / ReservedSceneName.RECORDING).exists()
+
+
+def test_a_new_recording_deletes_the_bundle_an_earlier_one_left(kitchen, locations):
+    stale = locations.local_scenes / ReservedSceneName.RECORDING
+    stale.mkdir(parents=True)
+    (stale / BundleFile.SCENE).write_text("{}", encoding="utf-8")
+    LivePublisher(locations=locations, class_index=WorkspaceClassIndex()).attach(
+        kitchen.world
+    )
+    assert not stale.exists()
 
 
 def test_discarding_drops_frames_and_bundle(publisher, kitchen, locations):

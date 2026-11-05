@@ -14,6 +14,7 @@ from typing_extensions import Dict, List, Optional, Sequence
 
 from cramera_bridge.exceptions import MissingMeshFile
 from cramera_bridge.export.assets import BundledAssets, MaterialLibrary, MeshFormat
+from cramera_bridge.export.textures import SurfaceFile, TexturedSurface
 from cramera_bridge.export.urdf import ModelReport, UrdfDocument
 from cramera_bridge.export.world_annotations import WorldAnnotations
 from cramera_bridge.geometry import (
@@ -249,9 +250,10 @@ class ObjectFiles:
         :param body: A free object.
         :param key: The object's key in the trajectory's object poses.
         :param spawn: The object's pose before the run.
-        :return: The object: a box for a single untransformed box, a copied mesh for a
-            single untransformed mesh at unit scale, a combined OBJ mesh otherwise, and
-            no geometry or colour for a body without shapes.
+        :return: The object: a combined binary glTF mesh when a shape has a
+            :class:`TexturedSurface`, a box for a single untransformed box, a copied
+            mesh for a single untransformed mesh at unit scale, a combined OBJ mesh
+            otherwise, and no geometry or colour for a body without shapes.
         :raises MissingMeshFile: When a mesh shape names a file that does not exist.
         """
         description = ObjectDescription(identifier=str(body.name), key=key, spawn=spawn)
@@ -263,6 +265,10 @@ class ObjectFiles:
                 raise MissingMeshFile(Path(shape.filename))
         description.color = PublishedColor(shapes[0].color).hexadecimal()
         description.height = self.height_of(shapes)
+        surfaces = [TexturedSurface.of(shape) for shape in shapes]
+        if any(surface is not None for surface in surfaces):
+            self.write_textured_surfaces(body, shapes, surfaces, key, description)
+            return description
         if len(shapes) == 1 and self.is_untransformed(shapes[0]):
             if isinstance(shapes[0], Box):
                 description.box = PublishedScale(shapes[0].scale).published()
@@ -346,3 +352,33 @@ class ObjectFiles:
         destination.parent.mkdir(parents=True, exist_ok=True)
         ShapeCollection(shapes=shapes).combined_mesh.export(str(destination))
         description.mesh = assets.relative(destination)
+
+    def write_textured_surfaces(
+        self,
+        body: Body,
+        shapes: List[Shape],
+        surfaces: List[Optional[TexturedSurface]],
+        key: str,
+        description: ObjectDescription,
+    ) -> None:
+        """
+        Write the shapes, each at its pose in the body, as one binary glTF mesh that
+        keeps their textures.
+
+        :param body: The body.
+        :param shapes: Its shapes.
+        :param surfaces: The textured surface of each shape, or None for a shape drawn
+            in its colour.
+        :param key: The object's key.
+        :param description: The description receiving the mesh.
+        """
+        placed = []
+        for shape, surface in zip(shapes, surfaces):
+            mesh = shape.mesh.copy() if surface is None else surface.mesh.copy()
+            mesh.apply_transform(shape.origin.to_np())
+            placed.append(mesh)
+        assets = BundledAssets(bundle_root=self.output_directory)
+        written = SurfaceFile(assets).write(
+            placed, self.object_directory(key), body.name.name
+        )
+        description.mesh = assets.relative(written)

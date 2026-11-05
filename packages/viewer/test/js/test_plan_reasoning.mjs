@@ -35,7 +35,7 @@ import {
   VariableRole,
   ViewerEvent,
 } from '../../src/cramera/web/protocol.js';
-import { CameraGlide, easedProgress, focusBounds, RegionOutlines } from '../../src/cramera/web/scene/scene-focus.js';
+import { CameraGlide, easedProgress, focusBounds, GlideSetting, RegionOutlines } from '../../src/cramera/web/scene/scene-focus.js';
 import { FakeDocument } from './support/fake-document.mjs';
 
 /**
@@ -183,6 +183,35 @@ test('nothing to glide onto starts no glide', () => {
   const glide = new CameraGlide(view);
   assert.equal(glide.glideTo(focusBounds(new THREE.Group(), new THREE.Group(), ['missing'])), false);
   assert.equal(glide.advance(1), false);
+});
+
+test('a double click on a small body glides near enough to frame it', () => {
+  const view = fakeView();
+  const glide = new CameraGlide(view);
+  const box = new THREE.Box3(new THREE.Vector3(0.5, 0.3, 0.9), new THREE.Vector3(0.55, 0.35, 0.95));
+  glide.glideOnto(box, new THREE.Vector3(0.5, 0.32, 0.92));
+  glide.advance(GlideSetting.SECONDS);
+  assert.deepEqual(view.controls.target.toArray(), box.getCenter(new THREE.Vector3()).toArray());
+  assert.ok(Math.abs(view.camera.position.distanceTo(view.controls.target) - GlideSetting.NEAREST) < 1e-9);
+});
+
+test('a double click on a body too big to frame from here glides onto the point hit, as far away as before', () => {
+  const view = fakeView();
+  const glide = new CameraGlide(view);
+  const point = new THREE.Vector3(-1, 3, 0);
+  glide.glideOnto(new THREE.Box3(new THREE.Vector3(-4, -4, 0), new THREE.Vector3(4, 4, 0.1)), point);
+  glide.advance(GlideSetting.SECONDS);
+  assert.deepEqual(view.controls.target.toArray(), point.toArray());
+  assert.deepEqual(view.camera.position.toArray(), [1, 3, 0]);
+});
+
+test('a double click on what belongs to no body glides onto the point hit', () => {
+  const view = fakeView();
+  const glide = new CameraGlide(view);
+  glide.glideOnto(new THREE.Box3(), new THREE.Vector3(0, 1, 1));
+  glide.advance(GlideSetting.SECONDS);
+  assert.deepEqual(view.controls.target.toArray(), [0, 1, 1]);
+  assert.deepEqual(view.camera.position.toArray(), [2, 1, 1]);
 });
 
 // %% reasoning

@@ -26,6 +26,21 @@ which this repository was mirrored until 22 Oct 2026.
   removed.
 
 ### Added
+- **Focusing the camera on a body.** Double-clicking a body in the 3D view selects it
+  and glides the camera onto it: near enough to frame a small body, or onto the point
+  hit for one too big to frame from where the camera stands, so a double click never
+  moves the camera away. F frames the selection, and the scroll wheel zooms towards
+  the cursor instead of the orbit centre (#107).
+- **`cramera connect`: a live run on a remote server or in a container, in the
+  laptop's browser.** Every page now reads the live publisher through the viewer's
+  `/api/live/` relay, which also relays the page's changes (stopping, saving and
+  discarding the recording, executing a resolution) for this machine, so the viewer's
+  port is the only one to reach. `cramera connect user@server [--container NAME]
+  [--start]` reaches it through the user's own `ssh`, carrying each connection into a
+  container with `docker exec -i NAME cramera pipe`; nothing on the server listens
+  beyond its loopback address. `cramera --lifeline` ends the viewer when its input
+  closes, as `--start` uses it. `Option` and `DEFAULT_PORT` moved to
+  `cramera.viewer_options`; `RELAYED_CHANGES` maps each change to its `ChangeReach`.
 - **The Segmind tab: what segmind saw, annotated in the replay.** A run recorded with
   segmind watching (`cramera-onboard --detect-events`, or `CRAMERA_DETECT_EVENTS=1` for
   a live run) lists every event with its sort, the frame it happened at and the keys
@@ -402,6 +417,29 @@ which this repository was mirrored until 22 Oct 2026.
   robot in the builder keeps its height.
 
 ### Fixed
+
+- **Saving a run right after stopping it saves that run.** The recording counted as
+  ended before its bundle was written, so a save in those seconds copied whatever
+  `__recording__` bundle an earlier run had left, or found none. A save now waits for
+  the written bundle, which the Live panel offers to save only once it is there, and a
+  new recording deletes the unsaved bundle an earlier one left.
+
+- **A world followed live draws its free objects.** The live bundle described none,
+  so walls, sinks and fixtures loaded from MJCF appeared only in a saved recording.
+  It now describes every free object at the pose it holds when the bundle is written,
+  and an object added, removed or drawn anew rewrites the bundle.
+
+- **Doors and drawers of MJCF worlds sit where the world has them.** The URDF export
+  dropped a connection's pose of its child relative to the joint, so every MJCF hinge
+  and slide child was drawn displaced by its joint's position. Such a joint now moves a
+  link of its own at the joint frame, `<child>_connection_frame`, to which the child is
+  fixed; the child link keeps its body's frame and the joint its name.
+- **Textured surfaces keep their textures in the viewer.** A world loaded from MJCF,
+  such as a RoboCasa kitchen, was drawn in flat colours. A primitive with a texture
+  and a mesh painted with a texture its own file does not name are now written into
+  the bundle as binary glTF holding the geometry, the texture coordinates and the
+  image, in the URDF models and for the free objects alike (`TexturedSurface`); a
+  primitive's texture repeats per meter or across each face, as the texture states.
 - **Nothing comes between the cinematic camera and what it films.** The film's wide
   orbit and its close-ups could stand behind a wall, inside a cabinet or beyond a door,
   so the picture showed that and not the robot. The camera now casts rays against the

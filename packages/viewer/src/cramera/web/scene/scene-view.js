@@ -165,6 +165,7 @@ export class SceneView {
     this.camera.up.set(0, 0, 1);
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = true;
+    this.controls.zoomToCursor = true;
     this.controls.addEventListener('change', () => this.requestRender());
     this.ground = new THREE.Mesh(
       new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE),

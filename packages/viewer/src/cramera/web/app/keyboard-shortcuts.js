@@ -1,6 +1,6 @@
 /**
  * Keyboard shortcuts of the viewer: space plays and pauses, the arrow keys step one
- * frame, Home and End jump to the ends.
+ * frame, Home and End jump to the ends, F moves the camera onto the selection.
  */
 
 /**
@@ -12,6 +12,7 @@ export const ShortcutKey = Object.freeze({
   NEXT_FRAME: 'ArrowRight',
   FIRST_FRAME: 'Home',
   LAST_FRAME: 'End',
+  FOCUS_SELECTION: 'f',
 });
 
 /**
@@ -29,8 +30,9 @@ export class PlaybackActions {
    * @param {function(): void} togglePlaying Starts or pauses playback.
    * @param {function(number): void} step Moves by a number of frames.
    * @param {function(boolean): void} jump Jumps to the last frame when true, the first when false.
+   * @param {function(): void} focus Moves the camera onto the selection.
    */
-  constructor(togglePlaying, step, jump) {
+  constructor(togglePlaying, step, jump, focus = () => {}) {
     /**
      * Starts or pauses playback.
      * @type {function(): void}
@@ -46,6 +48,11 @@ export class PlaybackActions {
      * @type {function(boolean): void}
      */
     this.jump = jump;
+    /**
+     * Moves the camera onto the selection.
+     * @type {function(): void}
+     */
+    this.focus = focus;
   }
 }
 
@@ -76,7 +83,8 @@ export class KeyboardShortcuts {
         [ShortcutKey.NEXT_FRAME]: () => actions.step(1),
         [ShortcutKey.FIRST_FRAME]: () => actions.jump(false),
         [ShortcutKey.LAST_FRAME]: () => actions.jump(true),
-      }[event.key];
+        [ShortcutKey.FOCUS_SELECTION]: () => actions.focus(),
+      }[event.key.length === 1 ? event.key.toLowerCase() : event.key];
       if (!action) return;
       event.preventDefault();
       action();

@@ -408,6 +408,16 @@ class NoRecording(Conflict):
 
 
 @dataclass
+class RecordingNotWritten(Conflict):
+    """
+    A save of a recording that has ended but whose bundle is still being written.
+    """
+
+    def message(self) -> str:
+        return "The recording is still being written; save it once it is."
+
+
+@dataclass
 class EmptyRecording(Conflict):
     """
     A recording without frames that was to be written as a bundle.

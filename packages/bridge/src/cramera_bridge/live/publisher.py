@@ -25,6 +25,7 @@ from cramera_bridge.exceptions import (
     MarkersUnavailable,
     NoRecording,
     NoWorldAttached,
+    RecordingNotWritten,
     RobotSelectionBusy,
     TeleoperationUnavailable,
     UnknownPerceptionImage,
@@ -282,11 +283,13 @@ class LivePublisher:
 
     def attach(self, world: World) -> None:
         """
-        Start publishing a world and recording its run.
+        Start publishing a world and recording its run, deleting an unsaved bundle an
+        earlier recording left, so that no save takes it for this run.
 
         :param world: The world.
         """
         with self.world_lock:
+            RecordingStorage(self.locations).discard()
             self.world = world
             self.model = None
             self.selected_robot = None
@@ -826,9 +829,14 @@ class LivePublisher:
         :param request: The save request.
         :return: The saved run.
         :raises NoRecording: While no finished recording waits to be saved.
+        :raises RecordingNotWritten: While the finished recording's bundle is still
+            being written, so that the save cannot take an older bundle for it.
         """
-        if self.recording.status().state is not RecordingState.FINALIZED:
+        status = self.recording.status()
+        if status.state is not RecordingState.FINALIZED:
             raise NoRecording(RecordingState.FINALIZED)
+        if status.scene_name is None:
+            raise RecordingNotWritten()
         run = RecordingStorage(self.locations).save(request)
         NativePlans(run).store(self.plan.performed_plans())
         self.recording.discard()

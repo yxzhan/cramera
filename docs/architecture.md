@@ -103,12 +103,22 @@ outside the class: dataclasses with a `from_json` classmethod.
   to every address and also answers requests addressed to the address they arrived
   at; one from another device must carry the viewer's key (in the query, then in a
   cookie) and may only read: a method that changes something is refused for it.
-- A live publisher listens on `127.0.0.1` only, since a query runs code. A page opened
-  at another address, as a phone opens the viewer, reads it through the viewer's
-  `LiveRelay` below `/api/live/`: the observation routes the page follows a run by,
-  with the query parameters each takes, from the publisher at `127.0.0.1:8765`.
-  Nothing that changes the run is relayed, and a publisher that does not answer is a
-  503.
+- A live publisher listens on `127.0.0.1` only, since a query runs code. Every page
+  reads the publisher at `127.0.0.1:8765` through the viewer's `LiveRelay` below
+  `/api/live/`, so the viewer's port is the only one a page has to reach: the
+  observation routes the page follows a run by, with the query parameters each takes,
+  and the changes the page makes, each with who may make it (`RELAYED_CHANGES`).
+  Stopping, saving and discarding the recording and executing a resolution stay with
+  this machine; stepping through the queries is also offered behind the proxy. A
+  publisher that does not answer is a 503.
+- `cramera connect user@server [--container NAME]` reaches a viewer on another machine
+  through the user's `ssh`: one shared connection (`-M -S`), the viewer's port forwarded
+  with `-L`, or, for a container, every browser connection carried by its own
+  `docker exec -i NAME cramera pipe`, which joins its standard input and output to the
+  viewer's port inside the container. The laptop listens on its loopback address and
+  the forwarding arrives at the viewer's, so both ends count the page as their own
+  machine's. `--start` starts the viewer with `--lifeline`, which ends it when the
+  connection closes.
 - With `--public-origin` the viewer is served by a password-checking reverse proxy on
   the same machine: `OriginPolicy.proxied` counts every request as another device's,
   admitted without the key. A route says what other devices may do with two flags:

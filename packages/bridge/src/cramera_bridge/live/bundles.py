@@ -16,6 +16,7 @@ from typing_extensions import TYPE_CHECKING, Dict, List, Optional, Sequence
 from cramera_bridge.documents import DocumentFile
 from cramera_bridge.exceptions import EmptyRecording
 from cramera_bridge.export.world_models import ObjectFiles, WorldModels
+from cramera_bridge.geometry import NumericPose
 from cramera_bridge.live.perception_images import bundle_file
 from cramera_bridge.live.recorded_statecharts import RecordedStatecharts
 from cramera_bridge.live.recording import FrameRange, FrameTiming, RecordedFrame
@@ -85,9 +86,10 @@ The directory below ``meshes`` holding a recording's meshes.
 class WorldSignature:
     """
     The identity of what a live bundle shows: every body outside the free objects with
-    its parent, its connection type and how it is drawn, and the selected robot.
+    its parent, its connection type and how it is drawn, every free object with how it
+    is drawn, and the selected robot.
 
-    Poses do not count.
+    Poses do not count, nor what holds a free object.
     """
 
     model: WorldModelView
@@ -109,7 +111,7 @@ class WorldSignature:
             f"{body.id}<-{self.parent_of(body)}{self.drawing_of(body)}"
             for body in self.model.world.bodies
             if body.id not in objects
-        )
+        ) + sorted(f"{body.id}{self.drawing_of(body)}" for body in self.model.objects)
         robot = (
             ""
             if self.selected_robot is None
@@ -342,6 +344,7 @@ class LiveBundleWriter:
                 format_version=CURRENT_VERSION,
                 models=models.models,
                 robot=models.robot,
+                objects=self.current_objects(model, staging),
                 missing_assets=models.missing_assets,
                 bundle_signature=signature,
                 world_bound=True,
@@ -478,6 +481,25 @@ class LiveBundleWriter:
             files.describe(body, ObjectKey.of(body), first_poses[ObjectKey.of(body)])
             for body in model.objects
             if ObjectKey.of(body) in first_poses
+        ]
+
+    @staticmethod
+    def current_objects(
+        model: WorldModelView, output_directory: Path
+    ) -> List[ObjectDescription]:
+        """
+        :param model: The world's current model.
+        :param output_directory: The bundle being written.
+        :return: Every free object, spawned where it is now.
+        """
+        files = ObjectFiles(output_directory)
+        return [
+            files.describe(
+                body,
+                ObjectKey.of(body),
+                NumericPose.of_entity(model.world, body).published(),
+            )
+            for body in model.objects
         ]
 
     @staticmethod

@@ -1,0 +1,19 @@
+<!-- A cabinet whose door is hinged off the door's origin and whose drawer slides on a
+     joint with a non-zero position, as MJCF kitchens such as RoboCasa's describe them. -->
+<mujoco model="hinged_cabinet">
+  <worldbody>
+    <body name="cabinet" pos="1 0 0.4">
+      <geom name="carcass" type="box" size="0.3 0.3 0.4"/>
+      <body name="door" pos="0.32 0 0" quat="0.9238795 0 0 0.3826834">
+        <joint name="door_hinge" type="hinge" pos="0 -0.28 0.05" axis="0 0 1"
+               limited="true" range="-1.57 0"/>
+        <geom name="door_panel" type="box" size="0.01 0.28 0.38"/>
+      </body>
+      <body name="drawer" pos="0.1 0 0.3">
+        <joint name="drawer_slide" type="slide" pos="0.05 0.1 -0.02" axis="1 0 0"
+               limited="true" range="0 0.4"/>
+        <geom name="drawer_box" type="box" size="0.2 0.25 0.05"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>

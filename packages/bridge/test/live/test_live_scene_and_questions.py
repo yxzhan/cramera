@@ -9,7 +9,9 @@ from http import HTTPStatus
 
 from cramera.http.messages import HttpMethod
 from cramera_bridge.documents import DocumentFile
+from cramera_bridge.geometry import NumericPose, PublishedColor
 from cramera_bridge.live.bundles import WorldSignature
+from cramera_bridge.live.world_model import ObjectKey
 from cramera_bridge.questions.live import (
     LIVE_TITLE,
     SpatialValueFormat,
@@ -52,6 +54,36 @@ def test_the_live_bundle_is_written_once_per_model(publisher, kitchen, locations
     description = DocumentFile(scene_file).read(SceneDescription)
     assert description.bundle_signature == publisher.info().bundle_signature
     assert description.world_bound is True
+
+
+def test_the_live_bundle_describes_the_free_objects_where_they_are(
+    publisher, kitchen, locations
+):
+    kitchen.milk_connection.origin = HomogeneousTransformationMatrix.from_xyz_rpy(
+        1.5, -0.2, 0.9, yaw=0.3, reference_frame=kitchen.root
+    )
+    scene = publisher.live_scene().scene
+    description = DocumentFile(locations.local_scenes / scene / BundleFile.SCENE).read(
+        SceneDescription
+    )
+    objects = {entry.key: entry for entry in description.objects}
+    assert set(objects) == set(publisher.model.object_keys())
+    milk = objects[ObjectKey.of(kitchen.milk)]
+    assert milk.spawn == NumericPose.of_entity(kitchen.world, kitchen.milk).published()
+    assert (
+        milk.color == PublishedColor(kitchen.milk.visual.shapes[0].color).hexadecimal()
+    )
+    assert (
+        locations.local_scenes / scene / objects[ObjectKey.of(kitchen.cup)].mesh
+    ).is_file()
+
+
+def test_a_new_free_object_changes_the_signature(publisher, kitchen):
+    before = WorldSignature(publisher.model, None).digest()
+    with kitchen.world.modify_world():
+        kitchen.world.remove_connection(kitchen.cup.parent_connection)
+        kitchen.world.remove_kinematic_structure_entity(kitchen.cup)
+    assert WorldSignature(publisher.model, None).digest() != before
 
 
 def test_a_model_change_changes_the_signature(publisher, kitchen):

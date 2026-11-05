@@ -4,9 +4,11 @@ The models and free objects of a world written into a bundle.
 
 from __future__ import annotations
 
+import numpy
 import pytest
 
 from cramera_bridge.exceptions import MissingMeshFile
+from cramera_bridge.export.assets import MeshFormat
 from cramera_bridge.export.world_models import (
     ENVIRONMENT_MODEL_NAME,
     ObjectFiles,
@@ -24,7 +26,12 @@ from semantic_digital_twin.semantic_annotations.semantic_annotations import (
 )
 from semantic_digital_twin.world_description.connections import PrismaticConnection
 
-from ..dataset.worlds import CUP_MESH
+from ..dataset.worlds import (
+    BRICKS_TEXTURE,
+    CUP_MESH,
+    UV_MAPPED_MESH,
+    WrittenSurface,
+)
 
 MESH_DIRECTORY = "test"
 """
@@ -171,6 +178,40 @@ def test_other_shapes_become_one_combined_mesh(kitchen, tmp_path):
     assert (tmp_path / description.mesh).is_file()
     assert description.height == pytest.approx(cylinder.height)
     assert description.color == PublishedColor(cylinder.color).hexadecimal()
+
+
+def test_a_textured_box_is_written_with_its_image(textured, tmp_path):
+    description = ObjectFiles(tmp_path).describe(
+        textured.wall, "wall", spawn_of(textured.world, textured.wall)
+    )
+    [box] = textured.wall.visual.shapes
+    surface = WrittenSurface(tmp_path / description.mesh)
+    assert description.box is None
+    assert surface.path.suffix == MeshFormat.GLB
+    assert numpy.array_equal(surface.image(), WrittenSurface.pixels_of(BRICKS_TEXTURE))
+    assert surface.mesh().extents == pytest.approx(box.scale.to_np()[:3])
+    assert description.height == box.scale.z
+
+
+def test_a_mesh_with_a_texture_its_file_does_not_name_is_written_with_it(
+    textured, tmp_path
+):
+    description = ObjectFiles(tmp_path).describe(
+        textured.panel, "panel", spawn_of(textured.world, textured.panel)
+    )
+    surface = WrittenSurface(tmp_path / description.mesh)
+    assert surface.path.suffix == MeshFormat.GLB
+    assert numpy.array_equal(surface.image(), WrittenSurface.pixels_of(BRICKS_TEXTURE))
+    assert description.material_library is None
+
+
+def test_a_mesh_without_a_texture_is_copied(textured, tmp_path):
+    description = ObjectFiles(tmp_path).describe(
+        textured.bare_panel,
+        "bare_panel",
+        spawn_of(textured.world, textured.bare_panel),
+    )
+    assert (tmp_path / description.mesh).read_bytes() == UV_MAPPED_MESH.read_bytes()
 
 
 def test_a_body_without_shapes_gets_no_geometry_and_no_colour(kitchen, tmp_path):

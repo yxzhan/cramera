@@ -45,3 +45,9 @@ DRAWER_CABINET_URDF = DATASET / "urdf" / "drawer_cabinet.urdf"
 A cabinet with one drawer and its handle, named as coraplex's apartment names them, in
 which CRAM's world reasoner finds a cabinet, a drawer and a handle.
 """
+
+HINGED_CABINET_MJCF = DATASET / "mjcf" / "hinged_cabinet.xml"
+"""
+A cabinet whose door and drawer joints sit away from the bodies they move, so their
+connections carry a pose of the child relative to the joint.
+"""
