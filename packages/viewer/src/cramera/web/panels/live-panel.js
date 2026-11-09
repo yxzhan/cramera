@@ -1,11 +1,13 @@
 /**
- * The Live panel: connect to a running CRAM process, see what it offers, and stop,
- * save or discard its recording.
+ * The Live panel: connect to a running CRAM process, see what it offers, stop, save or
+ * discard its recording, and choose the ROS topics and namespaces of its debug markers.
  */
 
 import {
   Capability,
   LiveInfoKey,
+  MarkerTopicRequestKey,
+  MarkerTopicsKey,
   RecordingSaveRequestKey,
   RecordingState,
   RecordingStatusKey,
@@ -134,8 +136,12 @@ export class LiveActions {
    * @param {function(): Promise<Object>} stopRecording Ends the recording.
    * @param {function(Object): Promise<Object>} saveRecording Saves the ended recording.
    * @param {function(): Promise<Object>} discardRecording Throws the ended recording away.
+   * @param {function(Object): Promise<Object>} changeMarkerTopic Starts or stops reading
+   *   a marker topic, answering with the topics read and on offer.
+   * @param {function(string, string, boolean): void} showMarkerNamespace Draws or hides
+   *   the markers of a topic's namespace.
    */
-  constructor(connect, disconnect, stopRecording, saveRecording, discardRecording) {
+  constructor(connect, disconnect, stopRecording, saveRecording, discardRecording, changeMarkerTopic = async () => null, showMarkerNamespace = () => {}) {
     /**
      * Connects to a publisher address.
      * @type {function(string): void}
@@ -161,8 +167,29 @@ export class LiveActions {
      * @type {function(): Promise<Object>}
      */
     this.discardRecording = discardRecording;
+    /**
+     * Starts or stops reading a marker topic.
+     * @type {function(Object): Promise<Object>}
+     */
+    this.changeMarkerTopic = changeMarkerTopic;
+    /**
+     * Draws or hides the markers of a topic's namespace.
+     * @type {function(string, string, boolean): void}
+     */
+    this.showMarkerNamespace = showMarkerNamespace;
   }
 }
+
+// %% marker controls
+
+/**
+ * What the markers section says when it has no namespace to list.
+ */
+export const MarkerNote = Object.freeze({
+  NO_ROS: 'This process reads no ROS markers: it runs without ROS.',
+  NO_TOPIC: 'Read a topic to draw its markers.',
+  NO_MARKERS: 'No markers on the topics read yet.',
+});
 
 // %% panel
 
@@ -216,6 +243,43 @@ export class LivePanel {
   #connecting = false;
 
   /**
+   * The debug markers' controls, shown while the publisher offers markers.
+   * @type {HTMLElement}
+   */
+  #markers;
+
+  /**
+   * A checkbox per marker topic on offer.
+   * @type {HTMLElement}
+   */
+  #topics;
+
+  /**
+   * A checkbox per namespace of the markers drawn.
+   * @type {HTMLElement}
+   */
+  #namespaces;
+
+  /**
+   * Says why no namespace is listed.
+   * @type {HTMLElement}
+   */
+  #markerNote;
+
+  /**
+   * The marker topics last read, or null before any.
+   * @type {Object|null}
+   */
+  #topicsShown = null;
+
+  /**
+   * The namespaces listed; the lists are only rebuilt when they change, so that markers
+   * that only moved leave a box being clicked in place.
+   * @type {string|null}
+   */
+  #namespacesListed = null;
+
+  /**
    * @param {Document} document The page.
    * @param {LiveActions} actions What the controls do.
    */
@@ -242,8 +306,108 @@ export class LivePanel {
     this.#recording.className = 'recording';
     this.#notice = document.createElement('p');
     this.#notice.className = 'notice';
-    this.panel.element.append(form, this.#state, this.#recording, this.#notice);
+    this.#markers = this.#markerControls();
+    this.panel.element.append(form, this.#state, this.#recording, this.#notice, this.#markers);
     this.showConnecting(false, null);
+  }
+
+  /**
+   * @returns {HTMLElement} The section choosing the marker topics and namespaces.
+   */
+  #markerControls() {
+    const document = this.panel.element.ownerDocument;
+    const section = document.createElement('section');
+    section.className = 'markers';
+    section.setAttribute('aria-label', 'ROS markers');
+    const title = document.createElement('h3');
+    title.textContent = 'ROS markers';
+    this.#topics = document.createElement('div');
+    this.#topics.className = 'marker-topics';
+    this.#topics.setAttribute('aria-label', 'Topics');
+    this.#namespaces = document.createElement('div');
+    this.#namespaces.className = 'marker-namespaces';
+    this.#namespaces.setAttribute('aria-label', 'Namespaces');
+    this.#markerNote = document.createElement('p');
+    this.#markerNote.className = 'marker-note';
+    section.append(title, this.#topics, this.#namespaces, this.#markerNote);
+    return section;
+  }
+
+  /**
+   * List the marker topics, each with whether it is read.
+   * @param {Object} topics The topics read and on offer.
+   */
+  showMarkerTopics(topics) {
+    if (JSON.stringify(topics) === JSON.stringify(this.#topicsShown)) return;
+    this.#topicsShown = topics;
+    const subscribed = new Set(topics[MarkerTopicsKey.SUBSCRIBED] ?? []);
+    const available = topics[MarkerTopicsKey.ROS] ? topics[MarkerTopicsKey.AVAILABLE] ?? [] : [];
+    this.#topics.replaceChildren(
+      ...available.map((topic) =>
+        this.#checkbox(topic, subscribed.has(topic), (checked) =>
+          this.#actions.changeMarkerTopic({ [MarkerTopicRequestKey.TOPIC]: topic, [MarkerTopicRequestKey.SUBSCRIBED]: checked }).then(
+            (changed) => { if (changed) this.showMarkerTopics(changed); },
+            (error) => {
+              this.#topicsShown = null;
+              this.#markerNote.textContent = error.message;
+            },
+          ),
+        ),
+      ),
+    );
+    this.#noteMarkers();
+  }
+
+  /**
+   * List the namespaces of the markers drawn, each with how many it has and whether
+   * they are drawn.
+   * @param {Array<import('../scene/debug-markers.js').MarkerNamespace>} namespaces The
+   *   namespaces.
+   */
+  showMarkerNamespaces(namespaces) {
+    const listed = JSON.stringify(namespaces);
+    if (listed === this.#namespacesListed) return;
+    this.#namespacesListed = listed;
+    const topics = new Set(namespaces.map(({ topic }) => topic));
+    this.#namespaces.replaceChildren(
+      ...namespaces.map(({ topic, namespace, count, shown }) => {
+        const name = namespace || '(no namespace)';
+        const label = `${topics.size > 1 ? `${topic} · ` : ''}${name} (${count})`;
+        return this.#checkbox(label, shown, (checked) => this.#actions.showMarkerNamespace(topic, namespace, checked));
+      }),
+    );
+    this.#noteMarkers();
+  }
+
+  /**
+   * Say why no namespace is listed, or nothing when one is.
+   */
+  #noteMarkers() {
+    const topics = this.#topicsShown;
+    if (this.#namespaces.children.length) this.#markerNote.textContent = '';
+    else if (topics && !topics[MarkerTopicsKey.ROS]) this.#markerNote.textContent = MarkerNote.NO_ROS;
+    else if (topics && !(topics[MarkerTopicsKey.SUBSCRIBED] ?? []).length) this.#markerNote.textContent = MarkerNote.NO_TOPIC;
+    else this.#markerNote.textContent = MarkerNote.NO_MARKERS;
+  }
+
+  /**
+   * @param {string} text What the checkbox switches.
+   * @param {boolean} checked Whether it is on.
+   * @param {function(boolean): void} change Called with its new state.
+   * @returns {HTMLElement} The labelled checkbox.
+   */
+  #checkbox(text, checked, change) {
+    const document = this.panel.element.ownerDocument;
+    const label = document.createElement('label');
+    label.className = 'switch';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = checked;
+    input.addEventListener('change', () => change(input.checked));
+    const caption = document.createElement('span');
+    caption.textContent = text;
+    label.append(input, caption);
+    return label;
   }
 
   /**
@@ -261,6 +425,7 @@ export class LivePanel {
     else this.#state.textContent = `Connected to ${info[LiveInfoKey.PUBLISHER]}; it offers ${offeredText(info[LiveInfoKey.CAPABILITIES] ?? [])}.`;
     this.panel.element.dataset.connected = String(Boolean(connecting && info));
     if (!info || !(info[LiveInfoKey.CAPABILITIES] ?? []).includes(Capability.RECORDING)) this.#recording.replaceChildren();
+    this.#markers.hidden = !(connecting && (info?.[LiveInfoKey.CAPABILITIES] ?? []).includes(Capability.MARKERS));
   }
 
   /**

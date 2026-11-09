@@ -2,9 +2,10 @@
 The live publisher: what a running CRAM world offers the viewer.
 
 The simulation thread reports the world's state and model changes, the plan's progress
-and every motion tick; each component takes its snapshot then. HTTP threads only read
-those snapshots, and queue the changes a person makes, which are written on the thread
-that owns the world.
+and every motion tick; each component takes its snapshot then, the world's state only
+once it is settled (see :mod:`cramera_bridge.live.snapshot_pacing`). HTTP threads only
+read those snapshots, and queue the changes a person makes, which are written on the
+thread that owns the world.
 """
 
 from __future__ import annotations
@@ -49,6 +50,7 @@ from cramera_bridge.live.recording import Recording
 from cramera_bridge.live.recording_storage import RecordingStorage
 from cramera_bridge.live.resolutions import ResolutionBoard
 from cramera_bridge.live.scene_highlights import SceneHighlighter
+from cramera_bridge.live.snapshot_pacing import FRAME_INTERVAL, SnapshotPacing
 from cramera_bridge.live.statechart import StatechartPublisher
 from cramera_bridge.live.teleoperation import TeleoperationDriver
 from cramera_bridge.live.transforms import TransformTracker
@@ -158,7 +160,12 @@ class LivePublisher:
 
     clock: Callable[[], float] = time.monotonic
     """
-    The monotonic clock transforms are aged with.
+    The monotonic clock transforms are aged and state snapshots spaced with.
+    """
+
+    snapshot_interval: float = FRAME_INTERVAL
+    """
+    The shortest time between two state snapshots, in seconds.
     """
 
     world: Optional[World] = field(default=None, init=False)
@@ -190,6 +197,11 @@ class LivePublisher:
     state: WorldStatePublisher = field(default_factory=WorldStatePublisher, init=False)
     """
     The state snapshots.
+    """
+
+    pacing: SnapshotPacing = field(init=False)
+    """
+    When the next state snapshot is taken.
     """
 
     objects: ObjectCatalogPublisher = field(
@@ -278,6 +290,8 @@ class LivePublisher:
 
     def __post_init__(self) -> None:
         self.bundle_writer = LiveBundleWriter(self.locations.local_scenes)
+        self.pacing = SnapshotPacing(clock=self.clock, interval=self.snapshot_interval)
+        self.markers.change_listener = self.observe_state_change
 
     # %% simulation thread
 
@@ -322,18 +336,29 @@ class LivePublisher:
                 )
             self.objects.refresh(self.model)
             self.desk.presets = WorldKnowledge(world, self.current_objects).presets()
-            self.observe_state_change()
+            self.take_snapshot()
 
     def observe_state_change(self) -> None:
+        """
+        Note that the world's state or its debug markers changed, and take a snapshot
+        unless a plan performs, whose ticks take them, or the last one is too recent.
+        """
+        with self.world_lock:
+            if self.model is not None and self.pacing.state_changed():
+                self.take_snapshot()
+
+    def take_snapshot(self) -> None:
         """
         Take a state snapshot and record it.
         """
         with self.world_lock:
             if self.model is None:
                 return
+            self.pacing.taken()
             self.markers.refresh(self.model.world)
+            markers_version, marker_poses = self.markers.placed(self.model.world)
             snapshot = self.state.refresh(
-                self.model, self.selected_robot, self.markers.version()
+                self.model, self.selected_robot, markers_version, marker_poses
             )
             self.transforms.observe(self.model.world, self.clock())
             self.recording.append(
@@ -350,6 +375,7 @@ class LivePublisher:
         :param executor: The executor that compiled the plan.
         """
         with self.world_lock:
+            self.pacing.plan_started(executor)
             access = executor.context.get_extension(RobotAccess)
             if access is not None and self.model is not None:
                 if access.robot in self.model.robots:
@@ -357,6 +383,16 @@ class LivePublisher:
             self.plan.begin(executor)
             self.constraints.clear()
             self.refresh_plan()
+
+    def end_plan(self, executor: PlanExecutor) -> None:
+        """
+        Take the state a plan left, however it stopped.
+
+        :param executor: The executor whose plan stopped performing.
+        """
+        with self.world_lock:
+            if self.pacing.plan_ended(executor):
+                self.take_snapshot()
 
     def observe_node_started(self, node: StatechartNode) -> None:
         """
@@ -378,7 +414,8 @@ class LivePublisher:
 
     def observe_tick(self, chart: Statechart, changed: bool) -> None:
         """
-        Write the waiting changes, evaluate the constraints and publish the statechart.
+        Write the waiting changes, evaluate the constraints, publish the statechart and
+        take a state snapshot when one is due.
 
         :param chart: The statechart the executor ticks.
         :param changed: Whether a node started or ended in the tick, so the plan is
@@ -400,6 +437,8 @@ class LivePublisher:
             self.ticks += 1
             if changed or self.ticks % PLAN_REFRESH_TICKS == 0:
                 self.refresh_plan()
+            if self.pacing.is_due():
+                self.take_snapshot()
 
     def refresh_plan(self) -> LivePlan:
         """
@@ -483,8 +522,17 @@ class LivePublisher:
 
     def current_state(self) -> LiveState:
         """
-        :return: The newest state snapshot.
+        :return: The newest state snapshot, after taking the one a change between plans
+            is owed: the interval held it back, and while the world rests nothing else
+            takes it.
         """
+        with self.world_lock:
+            if (
+                self.model is not None
+                and not self.pacing.is_performing()
+                and self.pacing.is_due()
+            ):
+                self.take_snapshot()
         return self.state.state()
 
     def current_plan(self) -> LivePlan:
@@ -626,7 +674,7 @@ class LivePublisher:
         self.stop_teleoperation()
         self.teleoperation = None
         self.selected_robot = robot
-        self.observe_state_change()
+        self.take_snapshot()
 
     # %% questions
 
@@ -796,13 +844,16 @@ class LivePublisher:
 
     def finish_recording(self) -> RecordingStatus:
         """
-        End the recording and write it as the ``__recording__`` bundle; finishing it
-        again reports the same bundle.
+        End the recording, with the last state when no plan performs, and write it as
+        the ``__recording__`` bundle; finishing it again reports the same bundle.
 
         :return: The recording's state, naming the bundle.
         :raises NoRecording: When nothing was recorded.
         :raises EmptyRecording: When the recording has no frames.
         """
+        with self.world_lock:
+            if self.pacing.pending and not self.pacing.is_performing():
+                self.take_snapshot()
         frames = self.recording.finish()
         if self.recording.status().scene_name is not None:
             return self.recording.status()

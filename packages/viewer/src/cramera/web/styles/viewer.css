@@ -698,6 +698,15 @@ body.scene-page { display: flex; flex-direction: column; overflow: hidden; backg
 .live input { flex: 1; min-width: 0; color: var(--text); background: var(--control); border: 1px solid var(--control-border); border-radius: var(--radius); padding: 5px 10px; }
 .live-state { margin: 0; color: var(--text-muted); }
 .live[data-connected="true"] .live-state { color: var(--success); }
+.live .markers { display: grid; gap: 4px; padding-top: 8px; border-top: 1px solid var(--border); }
+.live .markers[hidden] { display: none; }
+.live .markers h3 { margin: 0; font-size: 12px; font-weight: 600; letter-spacing: 0.4px; text-transform: uppercase; color: var(--text-muted); }
+.live .markers input { flex: none; padding: 0; }
+.live .marker-topics, .live .marker-namespaces { display: grid; }
+.live .marker-namespaces { padding-left: 12px; }
+.live .marker-topics span, .live .marker-namespaces span { overflow-wrap: anywhere; }
+.live .marker-note { margin: 0; font-size: 12px; color: var(--text-muted); }
+.live .marker-note:empty { display: none; }
 
 /* %% the scene alone, popped out into a window of its own */
 

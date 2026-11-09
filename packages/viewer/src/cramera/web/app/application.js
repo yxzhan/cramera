@@ -13,6 +13,7 @@ import {
   ExecutionRequestKey,
   LiveInfoKey,
   LiveRoute,
+  LiveStateKey,
   RecordingState,
   RecordingStatusKey,
   SceneKey,
@@ -36,6 +37,7 @@ import { QuerySlot } from '../panels/query-slot.js';
 import { COLUMNS, PaneSplit, ROWS } from './pane-split.js';
 import { CameraFollow } from '../scene/camera-follow.js';
 import { CinematicCamera, ShotPlan } from '../scene/cinematic-camera.js';
+import { DebugMarkers } from '../scene/debug-markers.js';
 import { FrameAxes, framesOf } from '../scene/frame-axes.js';
 import { ObjectLabels } from '../scene/object-labels.js';
 import { SceneLighting } from '../scene/scene-lighting.js';
@@ -297,6 +299,12 @@ export class Application {
   #axes = null;
 
   /**
+   * The live publisher's debug markers, once the 3D view exists.
+   * @type {DebugMarkers|null}
+   */
+  #markers = null;
+
+  /**
    * Moves the camera with the robot, once the 3D view exists.
    * @type {CameraFollow|null}
    */
@@ -444,6 +452,8 @@ export class Application {
         () => this.#live.client.send(LiveRoute.RECORDING_STOP),
         (request) => this.#live.client.saveRecording(request),
         () => this.#live.client.send(LiveRoute.RECORDING_DISCARD),
+        (request) => this.#live.client.send(LiveRoute.MARKER_TOPICS, request),
+        (topic, namespace, shown) => this.#markers?.setNamespaceShown(topic, namespace, shown),
       ),
     );
     this.#resolutions = new ResolutionsPanel(
@@ -496,6 +506,7 @@ export class Application {
     this.#view.scene.add(this.#lighting.group);
     this.#labels = new ObjectLabels(this.#elements.stage, this.#view);
     this.#axes = new FrameAxes(this.#view);
+    this.#markers = new DebugMarkers(this.#view, this.#elements.document);
     this.#follow = new CameraFollow(this.#view);
     this.#cinematic = new CinematicCamera(this.#view);
     this.#addLayers(this.#view);
@@ -617,6 +628,8 @@ export class Application {
         (steps) => this.#querySteps.show(steps),
         () => this.#querySteps.revision,
         (detected) => this.#segmind.showLive(detected),
+        (overlay) => this.#showMarkers(overlay),
+        (topics) => this.#livePanel.showMarkerTopics(topics),
       ),
     );
     this.#livePanel.showConnecting(true, null, address);
@@ -636,6 +649,8 @@ export class Application {
     this.#live = null;
     this.#resolutions.stop();
     this.#querySteps.stop();
+    this.#markers?.clear();
+    this.#livePanel.showMarkerNamespaces([]);
     this.#livePanel.showConnecting(false, null);
     this.#elements.statusLine.dataset.live = 'false';
     this.#showLiveConnection(null);
@@ -656,10 +671,20 @@ export class Application {
   #showLiveState(state) {
     if (!this.#scene) return;
     this.#scene.showState(state);
+    this.#markers.place(state[LiveStateKey.MARKERS_VERSION], state[LiveStateKey.MARKER_POSES] ?? {});
     this.#follow.follow(this.#scene.robotPosition());
     this.#picking.update();
     this.#highlights.update();
     this.#view.requestRender();
+  }
+
+  /**
+   * Draw a live publisher's marker overlay and list its namespaces.
+   * @param {Object} overlay The overlay.
+   */
+  #showMarkers(overlay) {
+    this.#markers.show(overlay);
+    this.#livePanel.showMarkerNamespaces(this.#markers.namespaces());
   }
 
   /**
@@ -774,6 +799,7 @@ export class Application {
       [
         new ViewSwitch('Objects', () => this.#objectsShown, (shown) => this.#showObjects(shown)),
         new ViewSwitch('TF frames', () => this.#axes.shown, (shown) => this.#axes.setShown(shown)),
+        new ViewSwitch('ROS markers', () => this.#markers.shown, (shown) => this.#markers.setShown(shown)),
         new ViewSwitch('Object labels', () => this.#labels.shown, (shown) => this.#labels.setShown(shown)),
         new ViewSwitch('Floor shadow', () => view.ground.visible, (shown) => view.showGround(shown)),
         new ViewSwitch('Ambient occlusion', () => view.ambientOcclusion, (enabled) => view.setAmbientOcclusion(enabled)),

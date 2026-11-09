@@ -7,11 +7,13 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 
-from typing_extensions import Optional
+from typing_extensions import Dict, Optional
 
 from cramera_bridge.geometry import POSE_PRECISION, NumericPose
+from cramera_bridge.live.physics_positions import PhysicsPositions
 from cramera_bridge.live.world_model import ObjectKey, WorldModelView
 from cramera_bridge.robots import RobotRoster
+from cramera_protocol.geometry import Pose
 from cramera_protocol.live_messages import LiveState
 from semantic_digital_twin.robots.robot_parts import AbstractRobot
 
@@ -39,18 +41,23 @@ class WorldStatePublisher:
         model: WorldModelView,
         selected_robot: Optional[AbstractRobot],
         markers_version: int,
+        marker_poses: Optional[Dict[str, Pose]] = None,
     ) -> LiveState:
         """
-        Read the world's current state into a new snapshot.
+        Read the world's current state into a new snapshot, with the joints left to the
+        physics where the physics has them.
 
         :param model: The world's current model.
         :param selected_robot: The robot whose root is the snapshot's base.
         :param markers_version: The version of the marker overlay.
+        :param marker_poses: The poses of that overlay's markers that follow a body, by
+            their positions among its markers.
         :return: The new snapshot.
         """
         world = model.world
+        physics = PhysicsPositions.of(world)
         frames = {
-            str(joint.name): round(float(joint.position), POSE_PRECISION)
+            str(joint.name): round(float(physics.position_of(joint)), POSE_PRECISION)
             for joint in model.joints
         }
         objects = {
@@ -74,6 +81,7 @@ class WorldStatePublisher:
                 objects=objects,
                 model_bases=model_bases,
                 markers_version=markers_version,
+                marker_poses=marker_poses or {},
             )
             return self.latest
 

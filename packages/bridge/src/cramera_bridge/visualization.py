@@ -70,7 +70,8 @@ The value of :attr:`DetectionEnvironmentVariable.DETECT_EVENTS` that turns detec
 @dataclass(eq=False)
 class PublishedStateChange(StateChangeCallback):
     """
-    Lets the publisher take a snapshot whenever the world's state changes.
+    Tells the publisher whenever the world's state changes, so it takes a snapshot once
+    the state is settled.
     """
 
     publisher: LivePublisher = field(kw_only=True)
@@ -132,6 +133,12 @@ class PublishedPlanProgress(TickingExecutorExtension):
 
     def after_tick(self, executor: StatechartExecutor) -> None:
         self.report(executor)
+
+    def after_run(self, executor: Executor) -> None:
+        """
+        Publish the state the plan left.
+        """
+        self.publisher.end_plan(executor)
 
     def report(self, executor: Executor) -> None:
         """

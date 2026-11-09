@@ -126,8 +126,10 @@ export class GraphView {
   /**
    * Draw a graph view.
    * @param {Object} view A graph view.
+   * @param {boolean} [keepFraming=false] Keep the panned and zoomed region, for a view
+   *     whose nodes sit where the drawn view's do.
    */
-  show(view) {
+  show(view, keepFraming = false) {
     const document = this.element.ownerDocument;
     const nodes = view[GraphViewKey.NODES] ?? [];
     const groups = (view[GraphViewKey.LEGEND] ?? []).map((entry) => entry[LegendEntryKey.GROUP]);
@@ -170,7 +172,8 @@ export class GraphView {
     }
     this.#drawing.replaceChildren(edges, marks);
     this.#places = [...placements.values()];
-    this.#fit(this.#places);
+    if (keepFraming) this.#applyBox();
+    else this.#fit(this.#places);
     this.#showLegend(view[GraphViewKey.LEGEND] ?? []);
     this.#details.replaceChildren();
   }

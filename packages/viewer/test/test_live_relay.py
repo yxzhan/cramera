@@ -169,6 +169,8 @@ def test_the_relay_reads_what_the_page_reads_and_nothing_else():
         LiveRoute.QUERY_STEPS,
         LiveRoute.DETECTED_EVENTS,
         LiveRoute.PERCEPTION_IMAGE,
+        LiveRoute.MARKERS,
+        LiveRoute.MARKER_TOPICS,
     }
 
 
@@ -251,7 +253,13 @@ def test_a_route_that_is_not_relayed_is_not_found_for_the_page(
 
 
 @pytest.mark.parametrize(
-    "route", [LiveRoute.RECORDING_STOP, LiveRoute.QUERY_STEPS_NEXT, LiveRoute.STATE]
+    "route",
+    [
+        LiveRoute.RECORDING_STOP,
+        LiveRoute.QUERY_STEPS_NEXT,
+        LiveRoute.MARKER_TOPICS,
+        LiveRoute.STATE,
+    ],
 )
 def test_a_phone_may_not_change_the_run_through_the_relay(
     catalog, locations, relay, route

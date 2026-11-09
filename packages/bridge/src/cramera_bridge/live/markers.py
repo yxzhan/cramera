@@ -13,10 +13,10 @@ from enum import IntEnum
 
 import numpy
 from scipy.spatial.transform import Rotation
-from typing_extensions import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing_extensions import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from cramera_bridge.geometry import POSE_PRECISION, NumericPose, PublishedColor
-from cramera_protocol.geometry import Vector3
+from cramera_protocol.geometry import Pose, Vector3
 from cramera_protocol.live_messages import MarkerDescription, MarkerKind, MarkerOverlay
 from semantic_digital_twin.world_description.geometry import Color
 
@@ -31,6 +31,16 @@ Decimal places of a published marker opacity.
 WORLD_FRAME_NAMES = frozenset({"", "map", "world"})
 """
 Frame names that mean the world itself, besides the name of the world's root.
+"""
+
+IDENTITY_QUATERNION = (0.0, 0.0, 0.0, 1.0)
+"""
+The quaternion of no rotation, as x, y, z and w.
+"""
+
+SHORTEST_QUATERNION = 1e-9
+"""
+The length below which a quaternion names no rotation at all.
 """
 
 
@@ -178,6 +188,12 @@ class MarkerEntry:
     Its text.
     """
 
+    colors: Tuple[str, ...] = ()
+    """
+    The colour of each point as a CSS hexadecimal colour, or none when :attr:`color`
+    colours them all.
+    """
+
     @classmethod
     def of_message(cls, marker: Any) -> Optional[MarkerEntry]:
         """
@@ -187,7 +203,7 @@ class MarkerEntry:
         marker_type = int(marker.type)
         if marker_type not in {member.value for member in MarkerType}:
             return None
-        position, orientation = marker.pose.position, marker.pose.orientation
+        position = marker.pose.position
         color = ColorChannels(marker.color)
         return cls(
             namespace=str(marker.ns),
@@ -198,17 +214,24 @@ class MarkerEntry:
                 float(position.x),
                 float(position.y),
                 float(position.z),
-                float(orientation.x),
-                float(orientation.y),
-                float(orientation.z),
-                float(orientation.w),
+                *QuaternionMessage(marker.pose.orientation).normalized(),
             ),
             scale=PointMessage(marker.scale).vector(),
             color=color.hexadecimal(),
             opacity=color.opacity(),
             points=tuple(PointMessage(point).vector() for point in marker.points),
             text=str(marker.text),
+            colors=tuple(
+                ColorChannels(point_color).hexadecimal()
+                for point_color in marker.colors
+            ),
         )
+
+    def in_world_frame(self) -> bool:
+        """
+        :return: Whether its frame is the world itself, so that it never moves.
+        """
+        return self.frame in WORLD_FRAME_NAMES
 
 
 @dataclass(frozen=True)
@@ -231,6 +254,34 @@ class PointMessage:
             round(float(self.message.y), POSE_PRECISION),
             round(float(self.message.z), POSE_PRECISION),
         )
+
+
+@dataclass(frozen=True)
+class QuaternionMessage:
+    """
+    A ``geometry_msgs/Quaternion`` message.
+    """
+
+    message: Any
+    """
+    The message.
+    """
+
+    def normalized(self) -> Tuple[float, float, float, float]:
+        """
+        :return: The quaternion scaled to unit length, as x, y, z and w. One of no length,
+            which a publisher leaves when it sets no orientation, or one that is not a
+            number is no rotation, as RViz draws it.
+        """
+        quaternion = numpy.array(
+            [self.message.x, self.message.y, self.message.z, self.message.w],
+            dtype=float,
+        )
+        length = numpy.linalg.norm(quaternion)
+        if not numpy.isfinite(length) or length < SHORTEST_QUATERNION:
+            return IDENTITY_QUATERNION
+        x, y, z, w = (float(component) for component in quaternion / length)
+        return x, y, z, w
 
 
 @dataclass(frozen=True)
@@ -347,6 +398,18 @@ class MarkerBoard:
     The topic revisions :attr:`overlay` was built from.
     """
 
+    followed: Tuple[Tuple[int, MarkerEntry], ...] = ()
+    """
+    The markers of :attr:`overlay` given in the frame of a body, each with its position
+    among the overlay's markers; they move with their bodies.
+    """
+
+    change_listener: Callable[[], None] = lambda: None
+    """
+    Called, without :attr:`lock`, whenever a topic's markers change, so the overlay is
+    posed again although the world rests.
+    """
+
     lock: threading.Lock = field(default_factory=threading.Lock)
     """
     Guards every field.
@@ -358,7 +421,9 @@ class MarkerBoard:
         :param markers: Its markers.
         """
         with self.lock:
-            self.stores.setdefault(topic, MarkerStore()).observe(markers)
+            changed = self.stores.setdefault(topic, MarkerStore()).observe(markers)
+        if changed:
+            self.change_listener()
 
     def drop(self, topic: str) -> None:
         """
@@ -367,7 +432,9 @@ class MarkerBoard:
         :param topic: The topic no longer watched.
         """
         with self.lock:
-            self.stores.pop(topic, None)
+            dropped = self.stores.pop(topic, None)
+        if dropped is not None and dropped.entries:
+            self.change_listener()
 
     def revisions(self) -> Tuple[Tuple[str, int], ...]:
         """
@@ -381,7 +448,8 @@ class MarkerBoard:
         """
         Pose the markers in the world if any topic changed; markers whose namespace
         names a body or region of the world draw what the scene already shows and are
-        left out, as are markers in a frame the world cannot resolve.
+        left out, as are markers in a frame the world cannot resolve. The markers given
+        in the frame of a body are posed again with every state, see :meth:`placed`.
 
         :param world: The world marker frames are resolved in.
         :return: Whether the overlay changed.
@@ -398,17 +466,40 @@ class MarkerBoard:
         frames = MarkerFrames(world)
         world_entities = frames.entity_names()
         described = [
-            frames.description(topic, entry)
+            (entry, frames.description(topic, entry))
             for topic, entry in entries
             if entry.namespace not in world_entities
         ]
-        markers = [marker for marker in described if marker is not None]
+        posed = [(entry, marker) for entry, marker in described if marker is not None]
+        markers = [marker for _, marker in posed]
         with self.lock:
+            self.published_revisions = revisions
+            if markers == self.overlay.markers:
+                return False
             self.overlay = MarkerOverlay(
                 version=self.overlay.version + 1, markers=markers
             )
-            self.published_revisions = revisions
+            self.followed = tuple(
+                (position, entry)
+                for position, (entry, _) in enumerate(posed)
+                if not entry.in_world_frame()
+            )
         return True
+
+    def placed(self, world: World) -> Tuple[int, Dict[str, Pose]]:
+        """
+        :param world: The world marker frames are resolved in.
+        :return: The version of the newest overlay, and the pose in the world of each of
+            its markers given in the frame of a body, by the marker's position among the
+            overlay's markers.
+        """
+        with self.lock:
+            version, followed = self.overlay.version, self.followed
+        frames = MarkerFrames(world)
+        poses = {str(position): frames.pose(entry) for position, entry in followed}
+        return version, {
+            position: pose for position, pose in poses.items() if pose is not None
+        }
 
     def current(self) -> MarkerOverlay:
         """
@@ -436,6 +527,12 @@ class MarkerFrames:
     The world.
     """
 
+    matrices: Dict[str, Optional[numpy.ndarray]] = field(default_factory=dict)
+    """
+    The pose of each frame resolved so far, so that the many markers of one frame
+    resolve it once.
+    """
+
     def entity_names(self) -> frozenset:
         """
         :return: The names of the world's bodies and regions.
@@ -451,6 +548,15 @@ class MarkerFrames:
             for a frame no body or several bodies are named, where the marker cannot be
             posed.
         """
+        if frame not in self.matrices:
+            self.matrices[frame] = self.resolve(frame)
+        return self.matrices[frame]
+
+    def resolve(self, frame: str) -> Optional[numpy.ndarray]:
+        """
+        :param frame: A marker's frame.
+        :return: See :meth:`frame_matrix`.
+        """
         root = self.world.root
         if frame in WORLD_FRAME_NAMES or frame in (str(root.name), root.name.name):
             return numpy.eye(4)
@@ -463,6 +569,19 @@ class MarkerFrames:
             return None
         return self.world.compute_forward_kinematics_np(root, candidates[0])
 
+    def pose(self, entry: MarkerEntry) -> Optional[Pose]:
+        """
+        :param entry: A marker.
+        :return: Its pose in the world, or None when its frame cannot be resolved.
+        """
+        frame_matrix = self.frame_matrix(entry.frame)
+        if frame_matrix is None:
+            return None
+        local = numpy.eye(4)
+        local[:3, :3] = Rotation.from_quat(entry.pose[3:]).as_matrix()
+        local[:3, 3] = entry.pose[:3]
+        return NumericPose.of_matrix(frame_matrix @ local).published()
+
     def description(
         self, topic: str, entry: MarkerEntry
     ) -> Optional[MarkerDescription]:
@@ -472,22 +591,19 @@ class MarkerFrames:
         :return: The marker posed in the world, or None when its frame cannot be
             resolved.
         """
-        frame_matrix = self.frame_matrix(entry.frame)
-        if frame_matrix is None:
+        pose = self.pose(entry)
+        if pose is None:
             return None
-        local = numpy.eye(4)
-        local[:3, :3] = Rotation.from_quat(entry.pose[3:]).as_matrix()
-        local[:3, 3] = entry.pose[:3]
-        pose = NumericPose.of_matrix(frame_matrix @ local)
         return MarkerDescription(
             topic=topic,
             namespace=entry.namespace,
             identifier=entry.identifier,
             kind=entry.kind,
-            pose=pose.published(),
+            pose=pose,
             scale=entry.scale,
             color=entry.color,
             opacity=entry.opacity,
             points=list(entry.points),
             text=entry.text,
+            colors=list(entry.colors),
         )

@@ -5,7 +5,8 @@ import { EventBus } from '../../src/cramera/web/core/event-bus.js';
 import { liveAddressOf, sceneOf, withLive } from '../../src/cramera/web/core/scene-address.js';
 import { LiveClient, readAddressOf } from '../../src/cramera/web/live/live-client.js';
 import { LiveListener, LiveSession, PollInterval } from '../../src/cramera/web/live/live-session.js';
-import { DEFAULT_LIVE_ADDRESS, LiveActions, LiveBadge, LiveBadgeState, LivePanel, offeredText, recordingText } from '../../src/cramera/web/panels/live-panel.js';
+import { DEFAULT_LIVE_ADDRESS, LiveActions, LiveBadge, LiveBadgeState, LivePanel, MarkerNote, offeredText, recordingText } from '../../src/cramera/web/panels/live-panel.js';
+import { MarkerNamespace } from '../../src/cramera/web/scene/debug-markers.js';
 import {
   Capability,
   DetectedEventsKey,
@@ -13,6 +14,9 @@ import {
   LiveRoute,
   LiveSceneKey,
   LiveStateKey,
+  MarkerOverlayKey,
+  MarkerTopicRequestKey,
+  MarkerTopicsKey,
   RecordingSaveRequestKey,
   RecordingState,
   RecordingStatusKey,
@@ -79,6 +83,8 @@ function recordingListener() {
     undefined,
     undefined,
     (detected) => calls.push(['events', detected]),
+    (overlay) => calls.push(['markers', overlay[MarkerOverlayKey.VERSION]]),
+    (topics) => calls.push(['topics', topics]),
   );
   return { calls, listener };
 }
@@ -197,6 +203,72 @@ test('the live client reads and posts relative to the publisher address', async 
   assert.equal(requests[1].init.method, 'POST');
 });
 
+test('the markers are read when a state names a version not drawn yet, and only then', async () => {
+  const versions = [1, 1, 2];
+  let sequence = 0;
+  let version = 0;
+  const { client, reads } = fakeClient({
+    [LiveRoute.INFO]: { ...INFO, [LiveInfoKey.CAPABILITIES]: [Capability.MARKERS] },
+    [LiveRoute.STATE]: () => {
+      version = versions.shift();
+      return { [LiveStateKey.SEQUENCE_NUMBER]: ++sequence, [LiveStateKey.MARKERS_VERSION]: version };
+    },
+    [LiveRoute.MARKERS]: () => ({ [MarkerOverlayKey.VERSION]: version, [MarkerOverlayKey.MARKERS]: [] }),
+  });
+  const { calls, listener } = recordingListener();
+  const session = new LiveSession(client, new ManualTimers(), new EventBus(), listener);
+  await session.pollInfo();
+  session.sceneShown();
+  for (let poll = 0; poll < 3; poll++) await session.pollState();
+  assert.deepEqual(calls.filter(([kind]) => kind === 'markers'), [['markers', 1], ['markers', 2]]);
+  assert.equal(reads.filter((route) => route === LiveRoute.MARKERS).length, 2);
+});
+
+test('markers that could not be read are read again while the world rests', async () => {
+  let failing = true;
+  const { client, reads } = fakeClient({
+    [LiveRoute.INFO]: { ...INFO, [LiveInfoKey.CAPABILITIES]: [Capability.MARKERS] },
+    [LiveRoute.STATE]: { [LiveStateKey.SEQUENCE_NUMBER]: 1, [LiveStateKey.MARKERS_VERSION]: 2 },
+    [LiveRoute.MARKERS]: () => (failing ? new Error('refused') : { [MarkerOverlayKey.VERSION]: 2, [MarkerOverlayKey.MARKERS]: [] }),
+  });
+  const { calls, listener } = recordingListener();
+  const session = new LiveSession(client, new ManualTimers(), new EventBus(), listener);
+  await session.pollInfo();
+  session.sceneShown();
+  await session.pollState();
+  failing = false;
+  await session.pollState();
+  await session.pollState();
+  assert.deepEqual(calls.filter(([kind]) => kind === 'markers'), [['markers', 2]]);
+  assert.equal(reads.filter((route) => route === LiveRoute.MARKERS).length, 2);
+});
+
+test('the markers and their topics are not read from a publisher that offers none', async () => {
+  const { client, reads } = fakeClient({ [LiveRoute.INFO]: INFO, [LiveRoute.STATE]: { [LiveStateKey.SEQUENCE_NUMBER]: 1, [LiveStateKey.MARKERS_VERSION]: 3 } });
+  const session = new LiveSession(client, new ManualTimers(), new EventBus(), recordingListener().listener);
+  await session.pollInfo();
+  session.sceneShown();
+  await session.pollState();
+  await session.pollMarkerTopics();
+  assert.deepEqual(reads.filter((route) => route === LiveRoute.MARKERS || route === LiveRoute.MARKER_TOPICS), []);
+});
+
+test('the markers are read again once the scene is shown anew', async () => {
+  let sequence = 0;
+  const { client, reads } = fakeClient({
+    [LiveRoute.INFO]: { ...INFO, [LiveInfoKey.CAPABILITIES]: [Capability.MARKERS] },
+    [LiveRoute.STATE]: () => ({ [LiveStateKey.SEQUENCE_NUMBER]: ++sequence, [LiveStateKey.MARKERS_VERSION]: 4 }),
+    [LiveRoute.MARKERS]: { [MarkerOverlayKey.VERSION]: 4, [MarkerOverlayKey.MARKERS]: [] },
+  });
+  const session = new LiveSession(client, new ManualTimers(), new EventBus(), recordingListener().listener);
+  await session.pollInfo();
+  session.sceneShown();
+  await session.pollState();
+  session.sceneShown();
+  await session.pollState();
+  assert.equal(reads.filter((route) => route === LiveRoute.MARKERS).length, 2);
+});
+
 // %% panels
 
 test('the Live panel connects, reports what the publisher offers, and drives the recording', async () => {
@@ -232,6 +304,48 @@ test('the Live panel connects, reports what the publisher offers, and drives the
   assert.match(notice.textContent, /Saved as my_run/);
   panel.showConnecting(false, null);
   assert.equal(recording.children.length, 0);
+});
+
+test('the Live panel chooses the marker topics read and the namespaces drawn', async () => {
+  const actions = [];
+  const panel = new LivePanel(new FakeDocument(), new LiveActions(
+    () => {}, () => {}, async () => {}, async () => {}, async () => {},
+    async (request) => {
+      actions.push(['topic', request]);
+      return { [MarkerTopicsKey.ROS]: true, [MarkerTopicsKey.SUBSCRIBED]: ['/a', '/b'], [MarkerTopicsKey.AVAILABLE]: ['/a', '/b'] };
+    },
+    (topic, namespace, shown) => actions.push(['namespace', topic, namespace, shown]),
+  ));
+  const markers = panel.panel.element.children[4];
+  const [, topics, namespaces, note] = markers.children;
+  assert.equal(markers.hidden, true);
+  panel.showConnecting(true, { ...INFO, [LiveInfoKey.CAPABILITIES]: [Capability.MARKERS] });
+  assert.equal(markers.hidden, false);
+  panel.showMarkerTopics({ [MarkerTopicsKey.ROS]: true, [MarkerTopicsKey.SUBSCRIBED]: ['/a'], [MarkerTopicsKey.AVAILABLE]: ['/a', '/b'] });
+  assert.deepEqual(topics.children.map((row) => [row.children[1].textContent, row.children[0].checked]), [['/a', true], ['/b', false]]);
+  assert.equal(note.textContent, MarkerNote.NO_MARKERS);
+  const box = topics.children[1].children[0];
+  box.checked = true;
+  box.dispatch('change');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(actions[0], ['topic', { [MarkerTopicRequestKey.TOPIC]: '/b', [MarkerTopicRequestKey.SUBSCRIBED]: true }]);
+  assert.equal(topics.children[1].children[0].checked, true);
+  panel.showMarkerNamespaces([new MarkerNamespace('/a', 'cells', 360, true), new MarkerNamespace('/b', '', 1, false)]);
+  assert.deepEqual(namespaces.children.map((row) => [row.children[1].textContent, row.children[0].checked]), [['/a · cells (360)', true], ['/b · (no namespace) (1)', false]]);
+  assert.equal(note.textContent, '');
+  const cells = namespaces.children[0].children[0];
+  cells.checked = false;
+  cells.dispatch('change');
+  assert.deepEqual(actions[1], ['namespace', '/a', 'cells', false]);
+});
+
+test('the Live panel says why it lists no marker namespace', () => {
+  const panel = new LivePanel(new FakeDocument(), new LiveActions(() => {}, () => {}, async () => {}, async () => {}, async () => {}));
+  const note = panel.panel.element.children[4].children[3];
+  panel.showMarkerTopics({ [MarkerTopicsKey.ROS]: false });
+  assert.equal(note.textContent, MarkerNote.NO_ROS);
+  panel.showMarkerTopics({ [MarkerTopicsKey.ROS]: true, [MarkerTopicsKey.SUBSCRIBED]: [], [MarkerTopicsKey.AVAILABLE]: ['/a'] });
+  assert.equal(note.textContent, MarkerNote.NO_TOPIC);
 });
 
 test('the Live panel names what the publisher offers in words', () => {

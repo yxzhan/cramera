@@ -417,6 +417,38 @@ which this repository was mirrored until 22 Oct 2026.
   robot in the builder keeps its height.
 
 ### Fixed
+- **The live view draws the ROS debug markers again.** The publisher read and served
+  them, but no part of the v1 viewer asked for them. The page now reads the overlay
+  whenever a state names a new version, through the viewer's relay, and draws every
+  marker kind the way RViz does: arrows by scale or between two points, boxes,
+  spheres, upright cylinders, line strips and lists as solid lines, box and sphere
+  lists, points with their own colours, and texts facing the camera. A marker that
+  only moved is moved, not built again. *ROS markers* in the Layers overlay switches
+  them, and the Live panel chooses the topics read and the namespaces drawn. Markers
+  that arrive while the world rests now take a snapshot; the last of a burst is taken
+  when the page next reads the state. A marker given in a body's frame follows the
+  body: the state carries its pose, so the overlay is not read again while it moves.
+  A marker whose quaternion is all zero, as publishers that set no orientation leave
+  it, is drawn unrotated instead of failing the snapshot (#114).
+- **A live run shows the kitchen's joints where the physics has them.** While a plan
+  runs, a MuJoCo synchronizer can leave the joints that are not the robot's to the
+  physics, and the world then keeps its own positions of them: the viewer showed a
+  drawer or door standing still while the robot pushed it, and jumping when the plan
+  ended. A snapshot now takes those joints' positions from every synchronizer that
+  gives them, through `physics_positions_left_to_the_physics` (#111).
+- **A saved scene's Statechart tab draws its recorded statecharts again.** Since the
+  Chart states tab was dropped, the tab only said the scene held no statechart, even
+  when its bundle had one. It now draws the chart of the shown frame as a tree,
+  coloured by each node's life cycle, and follows the playback. CRAM's internal nodes,
+  such as the collision avoidance's task per link, are folded into the node above
+  them, whose details count them by life cycle (#110).
+- **A live run records only settled states, at most 30 a second.** The live publisher
+  took a full snapshot of every state change, so the planner's checks, which set a
+  state and restore it, slowed the run down and landed in the recording as poses the
+  robot never took. While a plan performs, snapshots are now taken after the
+  executor's ticks, never from a state change itself; outside a plan, at most one per
+  frame interval. The last state of a plan, and of a recording when it ends, is always
+  kept (#100).
 
 - **Saving a run right after stopping it saves that run.** The recording counted as
   ended before its bundle was written, so a save in those seconds copied whatever

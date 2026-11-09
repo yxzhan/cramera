@@ -43,9 +43,12 @@ def locations(tmp_path: Path) -> DataLocations:
 @pytest.fixture
 def publisher(kitchen, locations) -> Iterator[LivePublisher]:
     """
-    :return: A publisher attached to the kitchen world and told of its changes.
+    :return: A publisher attached to the kitchen world and told of its changes, taking a
+        snapshot of every change outside a plan.
     """
-    publisher = LivePublisher(locations=locations, class_index=WorkspaceClassIndex())
+    publisher = LivePublisher(
+        locations=locations, class_index=WorkspaceClassIndex(), snapshot_interval=0.0
+    )
     publisher.attach(kitchen.world)
     callbacks = [
         PublishedStateChange(_world=kitchen.world, publisher=publisher),

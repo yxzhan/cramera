@@ -76,7 +76,7 @@ def test_unknown_and_fixed_objects_are_not_moved(publisher, kitchen):
 
 
 def test_a_joint_is_held_within_its_limits(robot_world, locations):
-    robot_publisher = LivePublisher(locations=locations)
+    robot_publisher = LivePublisher(locations=locations, snapshot_interval=0.0)
     robot_publisher.attach(robot_world.world)
     joint = robot_publisher.model.joint_named("pr2/torso_lift_joint")
     previous = joint.position

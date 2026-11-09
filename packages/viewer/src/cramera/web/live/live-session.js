@@ -1,15 +1,15 @@
 /**
  * A connection to a live publisher: polls its information, state, plan, statechart,
- * recording and the events its detectors saw, keeps only the newest answers, and reports
- * them to the application.
+ * recording, the events its detectors saw and its debug markers, keeps only the newest
+ * answers, and reports them to the application.
  */
 
-import { Capability, LiveInfoKey, LiveRoute, LiveSceneKey, LiveStateKey, ViewerEvent } from '../protocol.js';
+import { Capability, LiveInfoKey, LiveRoute, LiveSceneKey, LiveStateKey, MarkerOverlayKey, ViewerEvent } from '../protocol.js';
 
 /**
  * How often each part of the publisher is polled, in milliseconds.
  */
-export const PollInterval = Object.freeze({ INFO: 1000, STATE: 100, PLAN: 500, RECORDING: 1000, RESOLUTIONS: 400, QUERY_STEPS: 250, DETECTED_EVENTS: 500 });
+export const PollInterval = Object.freeze({ INFO: 1000, STATE: 100, PLAN: 500, RECORDING: 1000, RESOLUTIONS: 400, QUERY_STEPS: 250, DETECTED_EVENTS: 500, MARKER_TOPICS: 2000 });
 
 // %% callbacks
 
@@ -30,8 +30,11 @@ export class LiveListener {
    *   shown, so only a newer one is read whole.
    * @param {function(Object): void} showDetectedEvents Shows the events the detectors
    *   saw so far.
+   * @param {function(Object): void} showMarkers Draws a new marker overlay.
+   * @param {function(Object): void} showMarkerTopics Shows the marker topics read and on
+   *   offer.
    */
-  constructor(showScene, showState, showPlan, showStatechart, showRecording, showResolutions = () => {}, showQuerySteps = () => {}, shownRevision = () => null, showDetectedEvents = () => {}) {
+  constructor(showScene, showState, showPlan, showStatechart, showRecording, showResolutions = () => {}, showQuerySteps = () => {}, shownRevision = () => null, showDetectedEvents = () => {}, showMarkers = () => {}, showMarkerTopics = () => {}) {
     /**
      * Shows the bundle of the publisher's world.
      * @type {function(string): void}
@@ -77,6 +80,16 @@ export class LiveListener {
      * @type {function(Object): void}
      */
     this.showDetectedEvents = showDetectedEvents;
+    /**
+     * Draws a new marker overlay.
+     * @type {function(Object): void}
+     */
+    this.showMarkers = showMarkers;
+    /**
+     * Shows the marker topics read and on offer.
+     * @type {function(Object): void}
+     */
+    this.showMarkerTopics = showMarkerTopics;
   }
 }
 
@@ -138,6 +151,12 @@ export class LiveSession {
   #sceneShown = false;
 
   /**
+   * The version of the marker overlay drawn, or null before one is.
+   * @type {number|null}
+   */
+  #markersVersion = null;
+
+  /**
    * The requests in flight, by route, so a slow answer is not overtaken.
    * @type {Set<string>}
    */
@@ -168,6 +187,7 @@ export class LiveSession {
     this.#every(PollInterval.RESOLUTIONS, () => this.pollResolutions());
     this.#every(PollInterval.QUERY_STEPS, () => this.pollQuerySteps());
     this.#every(PollInterval.DETECTED_EVENTS, () => this.pollDetectedEvents());
+    this.#every(PollInterval.MARKER_TOPICS, () => this.pollMarkerTopics());
     this.pollInfo();
   }
 
@@ -181,6 +201,7 @@ export class LiveSession {
     this.info = null;
     this.#shownSignature = null;
     this.#sceneShown = false;
+    this.#markersVersion = null;
   }
 
   /**
@@ -197,6 +218,7 @@ export class LiveSession {
   sceneShown() {
     this.#sceneShown = true;
     this.#sequenceNumber = -1;
+    this.#markersVersion = null;
   }
 
   /**
@@ -224,15 +246,43 @@ export class LiveSession {
   }
 
   /**
-   * Read the world state and apply it when it is newer than the last one.
+   * Read the world state and apply it when it is newer than the last one, and the marker
+   * overlay when the state names a version not drawn yet.
    * @returns {Promise<void>} Settles once read or failed.
    */
   async pollState() {
     if (!this.info || !this.#sceneShown) return;
     const state = await this.#once(LiveRoute.STATE);
-    if (!state || state[LiveStateKey.SEQUENCE_NUMBER] <= this.#sequenceNumber) return;
-    this.#sequenceNumber = state[LiveStateKey.SEQUENCE_NUMBER];
-    this.#listener.showState(state);
+    if (!state) return;
+    if (state[LiveStateKey.SEQUENCE_NUMBER] > this.#sequenceNumber) {
+      this.#sequenceNumber = state[LiveStateKey.SEQUENCE_NUMBER];
+      this.#listener.showState(state);
+    }
+    await this.#readMarkers(state[LiveStateKey.MARKERS_VERSION]);
+  }
+
+  /**
+   * Read the marker topics read and on offer when the publisher reads markers.
+   * @returns {Promise<void>} Settles once read or failed.
+   */
+  async pollMarkerTopics() {
+    if (!this.info || !this.offers(Capability.MARKERS)) return;
+    const topics = await this.#once(LiveRoute.MARKER_TOPICS);
+    if (topics) this.#listener.showMarkerTopics(topics);
+  }
+
+  /**
+   * Read the marker overlay unless its version is drawn; a version that could not be
+   * read is read again with the next poll, although the world rests.
+   * @param {number|undefined} version The version a state names.
+   * @returns {Promise<void>} Settles once read or failed.
+   */
+  async #readMarkers(version) {
+    if (version === undefined || version === this.#markersVersion || !this.offers(Capability.MARKERS)) return;
+    const overlay = await this.#once(LiveRoute.MARKERS);
+    if (!overlay || !this.#sceneShown) return;
+    this.#markersVersion = overlay[MarkerOverlayKey.VERSION];
+    this.#listener.showMarkers(overlay);
   }
 
   /**

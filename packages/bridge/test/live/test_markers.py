@@ -30,8 +30,18 @@ from cramera_protocol.geometry import Pose
 from cramera_protocol.live import Capability, LiveRoute
 from cramera_protocol.live_messages import MarkerKind, MarkerTopicRequest, MarkerTopics
 
-from ..dataset.live_worlds import Header, MarkerMessage, MarkerPose, Vector
+from krrood_spatial_math.spatial_types import HomogeneousTransformationMatrix
+
+from ..dataset.live_worlds import (
+    Header,
+    MarkerColor,
+    MarkerMessage,
+    MarkerPose,
+    Orientation,
+    Vector,
+)
 from .conftest import dataset_body, live_request
+from .test_snapshot_pacing import ManualClock
 
 TOPIC = DefaultMarkerTopic.SEMANTIC_WORLD.value
 """
@@ -66,6 +76,34 @@ def test_a_marker_keeps_its_kind_colour_and_points():
     assert entry.kind is MarkerKind.LINE_LIST
     assert entry.color == "#ff0000"
     assert entry.points[0].z == 3
+
+
+def test_a_marker_without_an_orientation_is_drawn_unrotated():
+    store = MarkerStore()
+    store.observe([MarkerMessage(pose=MarkerPose(orientation=Orientation(w=0.0)))])
+    assert store.entries[("points", 0)].pose[3:] == (0.0, 0.0, 0.0, 1.0)
+
+
+def test_a_marker_s_orientation_is_scaled_to_unit_length():
+    store = MarkerStore()
+    store.observe(
+        [MarkerMessage(pose=MarkerPose(orientation=Orientation(z=2.0, w=0.0)))]
+    )
+    assert store.entries[("points", 0)].pose[3:] == (0.0, 0.0, 1.0, 0.0)
+
+
+def test_points_keep_colours_of_their_own():
+    store = MarkerStore()
+    store.observe(
+        [
+            MarkerMessage(
+                type=MarkerType.POINTS,
+                points=[Vector(), Vector(1, 0, 0)],
+                colors=[MarkerColor(), MarkerColor(r=0.0, g=1.0)],
+            )
+        ]
+    )
+    assert store.entries[("points", 0)].colors == ("#ff0000", "#00ff00")
 
 
 # %% posed in the world
@@ -118,6 +156,98 @@ def test_the_overlay_is_rebuilt_only_after_a_change(kitchen):
     assert board.refresh(kitchen.world) is True
     assert board.current().markers == []
     assert board.version() == 2
+
+
+def move_milk(kitchen, x: float) -> None:
+    """
+    Put the milk at another place along the table.
+    """
+    kitchen.milk_connection.origin = HomogeneousTransformationMatrix.from_xyz_rpy(
+        x, 0.1, 0.9, reference_frame=kitchen.root
+    )
+
+
+def test_a_marker_in_a_body_frame_follows_the_body_without_a_new_overlay(kitchen):
+    board = MarkerBoard()
+    board.observe(
+        TOPIC,
+        [MarkerMessage(id=0), MarkerMessage(id=1, header=Header(frame_id="milk"))],
+    )
+    board.refresh(kitchen.world)
+    move_milk(kitchen, 1.5)
+    assert board.refresh(kitchen.world) is False
+    version, poses = board.placed(kitchen.world)
+    assert version == 1
+    assert list(poses) == ["1"]
+    assert poses["1"].x == 1.5
+
+
+def test_markers_in_the_world_frame_have_no_pose_of_their_own_in_the_state(kitchen):
+    board = MarkerBoard()
+    board.observe(TOPIC, [MarkerMessage()])
+    board.refresh(kitchen.world)
+    assert board.placed(kitchen.world) == (1, {})
+
+
+# %% in the state
+
+
+@pytest.fixture
+def clock() -> ManualClock:
+    return ManualClock()
+
+
+@pytest.fixture
+def resting(kitchen, locations, clock) -> LivePublisher:
+    """
+    :return: A publisher of the kitchen world, which nothing moves.
+    """
+    publisher = LivePublisher(locations=locations, clock=clock)
+    publisher.attach(kitchen.world)
+    clock.advance()
+    return publisher
+
+
+def test_markers_arriving_while_the_world_rests_reach_the_state(resting):
+    before = resting.current_state().markers_version
+    resting.markers.observe(TOPIC, [MarkerMessage()])
+    assert resting.state.state().markers_version == before + 1
+    assert len(resting.marker_overlay().markers) == 1
+
+
+def test_the_last_of_a_burst_of_markers_reaches_the_state_once_it_is_read(
+    resting, clock
+):
+    resting.markers.observe(TOPIC, [MarkerMessage(id=1)])
+    resting.markers.observe(TOPIC, [MarkerMessage(id=2)])
+    assert len(resting.marker_overlay().markers) == 1
+    clock.advance()
+    resting.current_state()
+    assert len(resting.marker_overlay().markers) == 2
+
+
+def test_unchanged_markers_take_no_snapshot(resting):
+    resting.markers.observe(TOPIC, [MarkerMessage()])
+    frames = resting.recording.frame_count()
+    resting.markers.observe(TOPIC, [MarkerMessage()])
+    assert resting.recording.frame_count() == frames
+
+
+def test_the_state_carries_where_markers_following_a_body_are(resting, kitchen, clock):
+    resting.markers.observe(TOPIC, [MarkerMessage(header=Header(frame_id="milk"))])
+    move_milk(kitchen, 1.5)
+    clock.advance()
+    resting.observe_state_change()
+    state = resting.current_state()
+    assert state.marker_poses["0"].x == 1.5
+    assert state.markers_version == 1
+
+
+def test_a_dropped_topic_takes_its_markers_out_of_the_state(resting, clock):
+    resting.markers.observe(TOPIC, [MarkerMessage()])
+    clock.advance()
+    resting.markers.drop(TOPIC)
+    assert resting.marker_overlay().markers == []
 
 
 # %% topics

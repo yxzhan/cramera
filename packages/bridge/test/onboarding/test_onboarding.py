@@ -97,7 +97,8 @@ def test_a_demo_run_is_saved_as_a_named_bundle(locations):
     assert saved.scene == SCENE_NAME
     assert scene.name == SCENE_NAME
     assert scene.task == TASK
-    assert trajectory.frame_count() >= len(BOX_HEIGHTS)
+    heights = [next(iter(poses.values())).z for poses in trajectory.objects]
+    assert (heights[0], heights[-1]) == (BOX_HEIGHTS[0], BOX_HEIGHTS[-1])
     assert SCENE_NAME in [entry.name for entry in index.scenes]
     assert not (locations.local_scenes / ReservedSceneName.RECORDING).exists()
 

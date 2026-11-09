@@ -142,6 +142,11 @@ class LiveStateKey(StrEnum):
     The version of the marker overlay.
     """
 
+    MARKER_POSES = "markerPoses"
+    """
+    The poses of the markers that follow a body.
+    """
+
 
 @dataclass(kw_only=True)
 class LiveState(JsonDocument):
@@ -181,6 +186,15 @@ class LiveState(JsonDocument):
     markers_version: int = document_field(LiveStateKey.MARKERS_VERSION, default=0)
     """
     The version of the marker overlay; a reader fetches the markers when it changes.
+    """
+
+    marker_poses: Dict[str, Pose] = document_field(
+        LiveStateKey.MARKER_POSES, default_factory=dict
+    )
+    """
+    The pose in the world of every marker of that overlay given in the frame of a body,
+    by the marker's position among the overlay's markers; such a marker moves with its
+    body while the overlay stays the same.
     """
 
 
@@ -854,6 +868,11 @@ class MarkerKey(StrEnum):
     The marker's text.
     """
 
+    COLORS = "colors"
+    """
+    The colour of each of the marker's points.
+    """
+
 
 @dataclass(kw_only=True)
 class MarkerDescription(JsonDocument):
@@ -909,6 +928,12 @@ class MarkerDescription(JsonDocument):
     text: str = document_field(MarkerKey.TEXT, default="")
     """
     The text of a text marker.
+    """
+
+    colors: List[str] = document_field(MarkerKey.COLORS, default_factory=list)
+    """
+    The colour of each point as a CSS hexadecimal colour, when the marker gives its
+    points colours of their own; :attr:`color` colours them otherwise.
     """
 
 

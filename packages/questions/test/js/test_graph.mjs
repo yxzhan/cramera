@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import { EventBus } from 'cramera-viewer/core/event-bus.js';
 import { ViewerApi } from 'cramera-viewer/core/viewer-api.js';
 import {
+  ChartKey,
+  ChartNodeKey,
   GraphDetailKey,
   GraphEdgeKey,
   GraphEdgeKind,
@@ -12,8 +14,10 @@ import {
   GraphViewKey,
   GraphViewName,
   LegendEntryKey,
+  MomentKey,
   QuestionsParameter,
   QuestionsRoute,
+  StatechartsKey,
   ViewerEvent,
 } from 'cramera-viewer/protocol.js';
 import { FakeDocument } from 'cramera-testing/fake-document.mjs';
@@ -22,6 +26,7 @@ import { placeNodes } from '../../src/cramera_questions/web/graph-layout.js';
 import { GraphPanel, VIEW_TITLES } from '../../src/cramera_questions/web/graph-panel.js';
 import { GraphView, PALETTE_SIZE } from '../../src/cramera_questions/web/graph-view.js';
 import { QuestionsClient } from '../../src/cramera_questions/web/questions-client.js';
+import { LIFE_CYCLES, momentAt, NO_CHART_AT_FRAME, NO_MOMENT, statechartView } from '../../src/cramera_questions/web/recorded-statechart.js';
 
 const BASE = 'https://sunava.github.io/cramera/';
 
@@ -181,4 +186,126 @@ test('a scene shown while another loads replaces it', async () => {
   release({ [GraphViewKey.NODES]: [], [GraphViewKey.EMPTY]: 'first' });
   await first;
   assert.match(panel.element.innerText, /second/);
+});
+
+// %% recorded statecharts
+
+function chartNode(identifier, name, parent = null, className = name) {
+  return { [ChartNodeKey.IDENTIFIER]: identifier, [ChartNodeKey.NAME]: name, [ChartNodeKey.CLASS_NAME]: className, [ChartNodeKey.PARENT]: parent };
+}
+
+function moment(chart, lifeCycles) {
+  return { [MomentKey.CHART]: chart, [MomentKey.LIFE_CYCLES]: lifeCycles, [MomentKey.OBSERVATIONS]: lifeCycles.map(() => 'UNKNOWN') };
+}
+
+/**
+ * Two charts: a sequence of a reach and a grasp, then a lone place; frame 0 runs no chart.
+ */
+function recordedStatecharts() {
+  return {
+    [StatechartsKey.CHARTS]: [
+      { [ChartKey.TITLE]: 'PickUp', [ChartKey.NODES]: [chartNode('n0', 'Sequence'), chartNode('n1', 'Reach', 'n0'), chartNode('n2', 'Grasp', 'n0')], [ChartKey.EDGES]: [] },
+      { [ChartKey.TITLE]: 'Place', [ChartKey.NODES]: [chartNode('m0', 'Place')], [ChartKey.EDGES]: [] },
+    ],
+    [StatechartsKey.MOMENTS]: [
+      moment(0, ['RUNNING', 'RUNNING', 'NOT_STARTED']),
+      moment(0, ['RUNNING', 'SUCCEEDED', 'RUNNING']),
+      moment(1, ['RUNNING']),
+    ],
+    [StatechartsKey.FRAMES]: [NO_MOMENT, 0, 0, 1, 2],
+  };
+}
+
+function recordedView() {
+  return { [GraphViewKey.OK]: true, [GraphViewKey.VIEW]: GraphViewName.STATECHART, [GraphViewKey.NODES]: [], [GraphViewKey.EMPTY]: 'none', [GraphViewKey.RECORDED]: recordedStatecharts() };
+}
+
+function drawnNodes(panel) {
+  return panel.element.findAll((element) => element.getAttribute('class')?.startsWith('graph-node'));
+}
+
+function emptyMessage(panel) {
+  return panel.element.findAll((element) => element.className === 'graph-empty')[0];
+}
+
+test('a frame names its moment, or none past the recording or without a chart', () => {
+  const statecharts = recordedStatecharts();
+  assert.deepEqual([0, 1, 3, 4, 99].map((frame) => momentAt(statecharts, frame)), [NO_MOMENT, 0, 1, 2, NO_MOMENT]);
+});
+
+test('a moment is drawn as its chart\'s tree, each node coloured by its life cycle', () => {
+  const view = statechartView(recordedStatecharts(), 1);
+  const nodes = view[GraphViewKey.NODES];
+  assert.deepEqual(nodes.map((node) => [node[GraphNodeKey.LABEL], node[GraphNodeKey.GROUP]]), [['Sequence', 'RUNNING'], ['Reach', 'SUCCEEDED'], ['Grasp', 'RUNNING']]);
+  assert.deepEqual(view[GraphViewKey.EDGES].map((edge) => [edge[GraphEdgeKey.SOURCE], edge[GraphEdgeKey.DESTINATION]]), [['n0', 'n1'], ['n0', 'n2']]);
+  assert.equal(view[GraphViewKey.LAYOUT], GraphLayout.HIERARCHY);
+  assert.deepEqual(view[GraphViewKey.LEGEND].map((entry) => entry[LegendEntryKey.GROUP]), LIFE_CYCLES);
+  assert.deepEqual(view[GraphViewKey.DETAILS].n1[GraphDetailKey.LINES], ['Reach', 'life cycle: SUCCEEDED', 'observation: UNKNOWN']);
+});
+
+test('CRAM\'s internal nodes are folded into the node above them, which counts them', () => {
+  const statecharts = {
+    [StatechartsKey.CHARTS]: [{
+      [ChartKey.TITLE]: 'Reach',
+      [ChartKey.NODES]: [
+        chartNode('a', 'Avoidance'),
+        chartNode('t0', 'task 0', 'a', '_AvoidanceTask'),
+        chartNode('d0', 'data 0', 't0', '_AvoidanceHasData'),
+        chartNode('t1', 'task 1', 'a', '_AvoidanceTask'),
+        chartNode('o', 'orphan', null, '_Loose'),
+      ],
+      [ChartKey.EDGES]: [],
+    }],
+    [StatechartsKey.MOMENTS]: [moment(0, ['RUNNING', 'RUNNING', 'PAUSED', 'FAILED', 'RUNNING'])],
+    [StatechartsKey.FRAMES]: [0],
+  };
+  const view = statechartView(statecharts, 0);
+  assert.deepEqual(view[GraphViewKey.NODES].map((node) => node[GraphNodeKey.IDENTIFIER]), ['a', 'o']);
+  assert.deepEqual(view[GraphViewKey.EDGES], []);
+  assert.equal(view[GraphViewKey.DETAILS].a[GraphDetailKey.LINES].at(-1), 'internal nodes: 1 RUNNING, 1 PAUSED, 1 FAILED');
+});
+
+test('a life cycle the legend does not know gets a row of its own', () => {
+  const statecharts = recordedStatecharts();
+  statecharts[StatechartsKey.MOMENTS][2] = moment(1, ['DONE']);
+  const legend = statechartView(statecharts, 2)[GraphViewKey.LEGEND].map((entry) => entry[LegendEntryKey.GROUP]);
+  assert.deepEqual(legend, [...LIFE_CYCLES, 'DONE']);
+});
+
+test('a saved scene\'s statechart tab draws the chart of the shown frame and follows the playback', async () => {
+  const bus = new EventBus();
+  const panel = new GraphPanel(new FakeDocument(), GraphViewName.STATECHART, bus);
+  await panel.showScene('robocasa-run', { graph: async () => recordedView() });
+  assert.equal(drawnNodes(panel).length, 0);
+  assert.equal(emptyMessage(panel).textContent, NO_CHART_AT_FRAME);
+  bus.publish(ViewerEvent.FRAME_CHANGED, 1);
+  assert.equal(emptyMessage(panel).hidden, true);
+  const reach = () => drawnNodes(panel)[1].findAll((element) => element.tagName === 'title')[0].textContent;
+  assert.equal(drawnNodes(panel).length, 3);
+  assert.equal(reach(), 'Reach: RUNNING · UNKNOWN');
+  bus.publish(ViewerEvent.FRAME_CHANGED, 3);
+  assert.equal(reach(), 'Reach: SUCCEEDED · UNKNOWN');
+  bus.publish(ViewerEvent.FRAME_CHANGED, 4);
+  assert.equal(drawnNodes(panel).length, 1);
+  bus.publish(ViewerEvent.FRAME_CHANGED, 0);
+  assert.equal(drawnNodes(panel).length, 0);
+  assert.equal(emptyMessage(panel).hidden, false);
+});
+
+test('a saved scene opened at a later frame draws that frame\'s chart', async () => {
+  const bus = new EventBus();
+  const panel = new GraphPanel(new FakeDocument(), GraphViewName.STATECHART, bus);
+  bus.publish(ViewerEvent.FRAME_CHANGED, 4);
+  await panel.showScene('robocasa-run', { graph: async () => recordedView() });
+  assert.equal(drawnNodes(panel).length, 1);
+});
+
+test('a scene without recorded statecharts still says its view is empty', async () => {
+  const bus = new EventBus();
+  const panel = new GraphPanel(new FakeDocument(), GraphViewName.STATECHART, bus);
+  await panel.showScene('first', { graph: async () => recordedView() });
+  await panel.showScene('second', { graph: async () => ({ [GraphViewKey.NODES]: [], [GraphViewKey.EMPTY]: 'no chart' }) });
+  bus.publish(ViewerEvent.FRAME_CHANGED, 1);
+  assert.equal(drawnNodes(panel).length, 0);
+  assert.equal(emptyMessage(panel).textContent, 'no chart');
 });

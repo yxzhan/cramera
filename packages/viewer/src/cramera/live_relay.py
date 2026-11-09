@@ -41,6 +41,8 @@ RELAYED_READS: Mapping[LiveRoute, FrozenSet[LiveParameter]] = {
     LiveRoute.QUERY_STEPS: frozenset({LiveParameter.REVISION}),
     LiveRoute.DETECTED_EVENTS: frozenset(),
     LiveRoute.PERCEPTION_IMAGE: frozenset({LiveParameter.KEY}),
+    LiveRoute.MARKERS: frozenset(),
+    LiveRoute.MARKER_TOPICS: frozenset(),
 }
 """
 The routes the page reads to follow a run, each with the query parameters it takes; no
@@ -69,14 +71,15 @@ RELAYED_CHANGES: Mapping[LiveRoute, ChangeReach] = {
     LiveRoute.RECORDING_SAVE: ChangeReach.THIS_MACHINE,
     LiveRoute.RECORDING_DISCARD: ChangeReach.THIS_MACHINE,
     LiveRoute.RESOLUTION_EXECUTION: ChangeReach.THIS_MACHINE,
+    LiveRoute.MARKER_TOPICS: ChangeReach.THIS_MACHINE,
     LiveRoute.QUERY_STEPS_NEXT: ChangeReach.CONTROLLING_DEVICES,
     LiveRoute.QUERY_STEPS_MODE: ChangeReach.CONTROLLING_DEVICES,
 }
 """
 The changes the page makes, relayed with their body, each with who may make it: ending,
-saving and discarding the recording and executing a resolution stay with this machine;
-letting a held run carry on and choosing whether it is held at every query are also
-offered to devices that control runs.
+saving and discarding the recording, executing a resolution and choosing the marker
+topics read stay with this machine; letting a held run carry on and choosing whether it
+is held at every query are also offered to devices that control runs.
 """
 
 RELAY_TIMEOUT = 30.0

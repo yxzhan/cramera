@@ -106,6 +106,15 @@ class CrameraVisualization(WorldVisualization, TickingExecutorExtension):
         if self.progress is not None and self.shows(executor):
             self.progress.after_tick(executor)
 
+    def after_run(self, executor: Executor) -> None:
+        """
+        Publish the state the plan left, then stop serving the world if this extension
+        started serving it, which writes the recording with that state.
+        """
+        if self.progress is not None and self.shows(executor):
+            self.progress.after_run(executor)
+        super().after_run(executor)
+
 
 # %% registration
 

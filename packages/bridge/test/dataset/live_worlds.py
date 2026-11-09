@@ -342,3 +342,8 @@ class MarkerMessage:
     """
     The text.
     """
+
+    colors: List[MarkerColor] = field(default_factory=list)
+    """
+    The colour of each point, or none.
+    """
