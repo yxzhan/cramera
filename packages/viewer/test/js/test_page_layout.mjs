@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { ONTOLOGY_PAGE, ONTOLOGY_ROUTE, ONTOLOGY_TITLE, SCENE_PAGE, SiteHeader, ThemeSetting, localStorageOf, pageLinksOf, versionOf } from '../../src/cramera/web/app/site-header.js';
-import { layoutOf, panelOf, sceneAlone, withPanel } from '../../src/cramera/web/core/scene-address.js';
+import { fullscreenOf, layoutOf, panelOf, sceneAlone, withPanel } from '../../src/cramera/web/core/scene-address.js';
+import { FirstGestureFullscreen, FULLSCREEN_GESTURES } from '../../src/cramera/web/app/fullscreen.js';
 import { QuerySlot, SlotPanel, SlotTaken } from '../../src/cramera/web/panels/query-slot.js';
 import { COLUMNS, PaneSplit, ROWS } from '../../src/cramera/web/app/pane-split.js';
 import {
@@ -165,6 +166,58 @@ test('the scene alone is the same address with the scene layout and no panel', (
   assert.equal(alone.searchParams.get(PageParameter.SCENE), 'cell');
   assert.equal(layoutOf(BASE), null);
   assert.equal(panelOf(withPanel(BASE, 'workshop').href), 'workshop');
+});
+
+test('a page address asks for the full screen by naming the parameter', () => {
+  assert.equal(fullscreenOf(`${BASE}?${PageParameter.FULLSCREEN}`), true);
+  assert.equal(fullscreenOf(`${BASE}?scene=cell&${PageParameter.FULLSCREEN}=1`), true);
+  assert.equal(fullscreenOf(`${BASE}?scene=cell`), false);
+});
+
+// %% full screen
+
+/**
+ * A document whose root element counts the full screen requests it gets.
+ */
+function fullscreenDocument() {
+  const document = new FakeDocument();
+  document.fullscreenElement = null;
+  document.documentElement.requests = 0;
+  document.documentElement.requestFullscreen = () => {
+    document.documentElement.requests += 1;
+    return Promise.resolve();
+  };
+  return document;
+}
+
+test('the page takes the full screen at the first click or key and then stops listening', () => {
+  const document = fullscreenDocument();
+  new FirstGestureFullscreen(document);
+  for (const gesture of FULLSCREEN_GESTURES) assert.equal(document.listenerCount(gesture), 1);
+  document.dispatch('pointerdown');
+  document.dispatch('keydown');
+  assert.equal(document.documentElement.requests, 1);
+  for (const gesture of FULLSCREEN_GESTURES) assert.equal(document.listenerCount(gesture), 0);
+});
+
+test('a page already shown on the full screen asks for nothing', () => {
+  const document = fullscreenDocument();
+  document.fullscreenElement = document.documentElement;
+  new FirstGestureFullscreen(document);
+  document.dispatch('keydown');
+  assert.equal(document.documentElement.requests, 0);
+});
+
+test('a browser that refuses or lacks the full screen leaves the page as it is', async () => {
+  const refusing = fullscreenDocument();
+  refusing.documentElement.requestFullscreen = () => Promise.reject(new TypeError('not allowed'));
+  new FirstGestureFullscreen(refusing);
+  refusing.dispatch('pointerdown');
+  const lacking = new FakeDocument();
+  new FirstGestureFullscreen(lacking);
+  lacking.dispatch('pointerdown');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(lacking.listenerCount('pointerdown'), 0);
 });
 
 // %% query slot

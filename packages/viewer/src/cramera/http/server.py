@@ -177,6 +177,13 @@ class ViewerHttpServer(ThreadingHTTPServer):
 
     daemon_threads = True
 
+    request_queue_size = socket.SOMAXCONN
+    """
+    How many connections wait to be accepted: a page asks for hundreds of mesh files at
+    once, which a proxy such as Jupyter's opens as many connections, and the default of
+    5 made the system drop the rest until the page gave up on them.
+    """
+
     def __init__(self, address: Tuple[str, int], handler: Type[RequestHandler]) -> None:
         """
         :param address: The host and port to listen on; a host with ``:`` is IPv6.

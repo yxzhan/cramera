@@ -1,0 +1,24 @@
+{
+  "ServerApp": {
+    "default_url": "/cramera/?fullscreen"
+  },
+  "LabApp": {
+    "default_url": "/cramera/?fullscreen"
+  },
+  "ServerProxy": {
+    "servers": {
+      "cramera": {
+        "command": [
+          "/opt/cramera/cramera/binder/start_viewer.sh",
+          "{port}"
+        ],
+        "timeout": 120,
+        "absolute_url": false,
+        "launcher_entry": {
+          "title": "CRAMERA",
+          "icon_path": "/opt/cramera/cramera/packages/viewer/src/cramera/web/images/icon.svg"
+        }
+      }
+    }
+  }
+}

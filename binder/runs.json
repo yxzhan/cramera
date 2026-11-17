@@ -1,0 +1,17 @@
+{
+  "runs": [
+    {
+      "identifier": "garmi_apartment",
+      "label": "GARMI in the apartment",
+      "command": [
+        "/opt/cramera/venv/bin/python",
+        "-m",
+        "cramera_bridge.demos.garmi_apartment",
+        "--step-queries",
+        "--name",
+        "{recording}"
+      ],
+      "scene": "garmi_pick_place"
+    }
+  ]
+}

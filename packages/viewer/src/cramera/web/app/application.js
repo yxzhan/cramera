@@ -6,7 +6,7 @@
 import * as THREE from 'three';
 
 import { EventBus } from '../core/event-bus.js';
-import { layoutOf, liveAddressOf, panelOf, sceneAlone, sceneOf, withLive, withScene } from '../core/scene-address.js';
+import { fullscreenOf, layoutOf, liveAddressOf, panelOf, sceneAlone, sceneOf, withLive, withScene } from '../core/scene-address.js';
 import { PageStatus } from '../core/page-status.js';
 import {
   Capability,
@@ -49,6 +49,7 @@ import { CameraGlide, focusBounds, RegionOutlines } from '../scene/scene-focus.j
 import { SceneHighlights } from '../scene/scene-highlights.js';
 import { ScenePicking } from '../scene/scene-picking.js';
 import { SceneView } from '../scene/scene-view.js';
+import { FirstGestureFullscreen } from './fullscreen.js';
 import { KeyboardShortcuts, PlaybackActions } from './keyboard-shortcuts.js';
 import { PluginContext, PluginModules } from './plugin-modules.js';
 import { ontologyAddress } from './ontology-page.js';
@@ -489,6 +490,7 @@ export class Application {
     this.#header.show(info);
     const layout = layoutOf(this.#location.href);
     if (layout) this.#elements.document.documentElement.dataset.layout = layout;
+    if (fullscreenOf(this.#location.href)) new FirstGestureFullscreen(this.#elements.document);
     const choice = new SceneChoice(index);
     const requested = sceneOf(this.#location.href);
     if (requested) choice.chooseScene(requested);

@@ -8,6 +8,7 @@ import json
 import socket
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from pathlib import Path
 
@@ -374,6 +375,18 @@ def test_the_server_decodes_percent_encoded_paths(answerer):
         with pytest.raises(urllib.error.HTTPError) as refused:
             urllib.request.urlopen(escaping)
         assert refused.value.code == HTTPStatus.FORBIDDEN
+
+
+def test_the_server_answers_a_page_that_asks_for_hundreds_of_files_at_once(answerer):
+    with HttpServer(answerer=answerer) as server:
+        url = server.url() + ViewerRoute.SCENE_FILES + "cell/meshes/arm%20base.stl"
+
+        def status(_: int) -> int:
+            with urllib.request.urlopen(url, timeout=2) as answer:
+                return answer.status
+
+        with ThreadPoolExecutor(max_workers=250) as pool:
+            assert set(pool.map(status, range(250))) == {HTTPStatus.OK}
 
 
 def test_the_url_brackets_an_ipv6_host(answerer):

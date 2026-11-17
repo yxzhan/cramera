@@ -1,6 +1,6 @@
 /**
  * How a page address names what the page shows: `?scene=<name>`, `?live=<address>`,
- * `?layout=scene` and `?panel=<identity>`.
+ * `?layout=scene`, `?panel=<identity>` and `?fullscreen`.
  */
 
 import { PageLayout, PageParameter } from '../protocol.js';
@@ -92,4 +92,12 @@ export function withPanel(viewer, panel) {
   const url = new URL(viewer);
   url.searchParams.set(PageParameter.PANEL, panel);
   return url;
+}
+
+/**
+ * @param {string} href A page address.
+ * @returns {boolean} Whether it asks for the page on the full screen.
+ */
+export function fullscreenOf(href) {
+  return new URL(href).searchParams.has(PageParameter.FULLSCREEN);
 }

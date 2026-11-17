@@ -1,0 +1,9 @@
+# The ROS packages the robot runs read their robots and worlds from, at the commits the
+# CRAMERA phone server runs them with: repository, commit, then the packages it gives.
+https://github.com/code-iai/iai_pr2.git	44009944748bb8c0b9a7ecae73721bc8a6a76f1d	iai_pr2_description
+https://github.com/geriatronics/garmi_description.git	e6855fcd6562f72859d10d255d0c60b0e443e975	garmi_description
+https://github.com/code-iai/iai_maps.git	ab527452d1412bc288cf25b67dc0b60926a3b8f1	iai_garmi_apartment iai_apartment
+https://github.com/code-iai/iai_tiago_description.git	095ffd882a68cbabd9f7c82ce6fd56fbe4e48c53	iai_tiago_description
+https://github.com/pal-robotics/pmb2_robot.git	8c2758eb91eac80a626df0ded51cb18d3fd7d215	pmb2_description
+https://github.com/pal-robotics/pal_gripper.git	485b535532c04b0ce31a00ad431d99e2714c0d54	pal_gripper_description
+https://github.com/cram2/cram_ros2_packages.git	8d2b419a6947b30f8fb671271f776420496750f1	json_msgs

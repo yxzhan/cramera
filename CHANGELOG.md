@@ -26,6 +26,16 @@ which this repository was mirrored until 22 Oct 2026.
   removed.
 
 ### Added
+- **Binder and Docker image with every demo.** `binder/Dockerfile` builds the viewer,
+  every plugin, CRAM at a pinned commit and the ROS packages the robots and worlds come
+  from onto IntEL4CoRo's Jupyter ROS 2 image. Jupyter's server proxy serves the viewer at
+  `/cramera/` and opens it by default, with this repository's demo scenes, the
+  laboratory, `solutions-cramera-scenes` and GARMI's apartment run live in the Runs
+  tab. https://binder.intel4coro.de/v2/gh/AICOR-Solutions/cramera/binder?urlpath=cramera/%3Ffullscreen
+  opens it straight into the viewer, built from the `binder` branch so commits to `main`
+  do not rebuild it.
+- **`?fullscreen` page parameter.** The page takes the whole screen, as F11 does, at
+  the first click or key press.
 - **Focusing the camera on a body.** Double-clicking a body in the 3D view selects it
   and glides the camera onto it: near enough to frame a small body, or onto the point
   hit for one too big to frame from where the camera stands, so a double click never
@@ -417,6 +427,11 @@ which this repository was mirrored until 22 Oct 2026.
   robot in the builder keeps its height.
 
 ### Fixed
+- **Scenes load completely behind a proxy.** The viewer's server let only 5
+  connections wait to be accepted, so behind Jupyter's server proxy on Binder, which
+  opens a connection for each of the hundreds of mesh files a page asks for at once,
+  dozens of meshes never arrived and the page reported them as files that could not
+  be loaded. It now queues as many as the system allows.
 - **The live view draws the ROS debug markers again.** The publisher read and served
   them, but no part of the v1 viewer asked for them. The page now reads the overlay
   whenever a state names a new version, through the viewer's relay, and draws every

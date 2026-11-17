@@ -34,6 +34,12 @@ class PageParameter(StrEnum):
     The identity of the panel the page shows first.
     """
 
+    FULLSCREEN = "fullscreen"
+    """
+    Present, with any value or none: the page takes the whole screen, as F11 does, at a
+    person's first click or key press, since browsers allow it only then.
+    """
+
 
 class PageLayout(StrEnum):
     """
