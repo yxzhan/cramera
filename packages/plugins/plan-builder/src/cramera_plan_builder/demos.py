@@ -76,11 +76,11 @@ class DemoTemplate:
 
     def render(self, demo: DemoDocument) -> DemoSource:
         """
-        :param demo: A checked plan, whose name is a file name, and its environment.
+        :param demo: A checked plan, whose name gives a file name, and its environment.
         :return: The demo's file name and source.
         """
         plan = demo.plan
-        file_name = f"{plan.name}{DEMO_SUFFIX}"
+        file_name = f"{plan.file_name()}{DEMO_SUFFIX}"
         source = Template(self.path.read_text(encoding="utf-8")).substitute(
             {
                 TemplateField.NAME: plan.name,

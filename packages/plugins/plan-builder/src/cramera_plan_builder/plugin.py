@@ -24,9 +24,14 @@ from cramera.plugins import (
 from cramera_plan_builder.constraints import ConstraintCompiler
 from cramera_plan_builder.demos import DemoDirectory, DemoTemplate
 from cramera_plan_builder.plans import PlanStore
+from cramera_plan_builder.profiles import ConfiguredProfile
 from cramera_plan_builder.environments import EnvironmentAnnotationCache
+from cramera_plan_builder.mirroring import PostureMirror
 from cramera_plan_builder.routes import PlanBuilderRoutes
 from cramera_plan_builder.runs import DemoRunner
+from cramera_plan_builder.reaches import RobotReaches
+from cramera_plan_builder.scans import SceneScans
+from cramera_plan_builder.validations import PlanValidations
 from cramera_plan_builder.workspace import RobotModelFiles, WorkspaceLoader
 from cramera_protocol.live import LIVE_HOST, LIVE_PORT
 from cramera_protocol.plan_builder import (
@@ -35,6 +40,7 @@ from cramera_protocol.plan_builder import (
     PlanBuilderName,
     PlanBuilderVariable,
 )
+from cramera_protocol.robot_profile import RobotConnection
 from cramera_protocol.viewer import NavigationGroup
 
 WEB_DIRECTORY = Path(__file__).parent / "web"
@@ -173,6 +179,26 @@ class PlanBuilderPlugin(ViewerPlugin):
     Renders a plan into its demo.
     """
 
+    scans: SceneScans = field(default_factory=SceneScans)
+    """
+    Scans the scene for a plan's objects.
+    """
+
+    validations: PlanValidations = field(default_factory=PlanValidations)
+    """
+    Validates plans.
+    """
+
+    reaches: RobotReaches = field(default_factory=RobotReaches)
+    """
+    Measures what robot models reach.
+    """
+
+    mirror: PostureMirror = field(default_factory=PostureMirror)
+    """
+    Mirrors where the real robot stands, while the builder is attached to it.
+    """
+
     def name(self) -> str:
         return PlanBuilderName.PLUGIN
 
@@ -192,8 +218,18 @@ class PlanBuilderPlugin(ViewerPlugin):
         :return: The plan builder's routes.
         """
         storage = PlanBuilderStorage.of(context.locations, self.environment)
+        profile = ConfiguredProfile.of_environment(self.environment)
         demos = DemoDirectory(storage.demos)
         port = self.port()
+        if profile.connection is RobotConnection.REAL:
+            self.mirror.start()
+        runner = DemoRunner(
+            directory=demos,
+            port=port,
+            log_limit=self.limits.maximum_log_bytes,
+            template=self.template,
+            prepared_program=DemoRunner.prepared_program_command(demos.interpreter),
+        )
         return PlanBuilderRoutes(
             scenes=context.catalog,
             local_scenes=context.locations.local_scenes,
@@ -201,18 +237,31 @@ class PlanBuilderPlugin(ViewerPlugin):
             annotations=EnvironmentAnnotationCache(self.workspace),
             robot_files=RobotModelFiles(self.workspace, storage.robots),
             plans=PlanStore(storage.plans),
-            compiler=ConstraintCompiler.of_file(),
+            compiler=ConstraintCompiler.of_file(camera_mount=profile.camera_mount()),
             demos=demos,
-            runner=DemoRunner(
-                directory=demos,
-                port=port,
-                log_limit=self.limits.maximum_log_bytes,
-                template=self.template,
-            ),
+            runner=runner,
             limits=self.limits,
             live_url=f"{LIVE_SCHEME}://{LIVE_HOST}:{port}",
             template=self.template,
+            profile=profile,
+            scans=self.scans,
+            validations=self.validations,
+            reaches=self.reaches,
+            mirror=self.mirror,
         ).declarations()
+
+    def start(self) -> None:
+        """
+        Read the CRAM workspace in the background, so the first catalog request does not
+        wait for CRAM's import.
+        """
+        self.workspace.preload()
+
+    def close(self) -> None:
+        """
+        End the posture mirror.
+        """
+        self.mirror.close()
 
     def web_directory(self) -> Optional[Path]:
         return WEB_DIRECTORY

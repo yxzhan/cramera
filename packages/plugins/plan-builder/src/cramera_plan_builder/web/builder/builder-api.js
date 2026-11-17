@@ -2,7 +2,7 @@
  * The plan builder's routes as the builder page calls them.
  */
 
-import { EnvironmentAnnotationsParameter, ErrorKey, PlanBuilderName, PlanBuilderRoute, PlanRecordKey, RunRequestKey, UrdfEnvironmentKey, UrdfFolderParameter, ViewerRoute } from '../../../protocol.js';
+import { DetectionRegionKey, EnvironmentAnnotationsParameter, ErrorKey, PlanBuilderName, PlanBuilderRoute, PlanRecordKey, ReachRequestKey, RegionKind, RunRequestKey, ScanRequestKey, UrdfEnvironmentKey, UrdfFolderParameter, ValidationRequestKey, ViewerRoute } from '../../../protocol.js';
 
 /**
  * The media type of JSON bodies, which also explain errors.
@@ -33,14 +33,21 @@ export class RequestRefused extends Error {
   /**
    * @param {number} status The answer's HTTP status.
    * @param {string} reason The reason the server gave, or the status text.
+   * @param {string|null} output The whole output of the process behind the refusal,
+   *   or null when the server gave none.
    */
-  constructor(status, reason) {
+  constructor(status, reason, output = null) {
     super(reason);
     /**
      * The answer's HTTP status.
      * @type {number}
      */
     this.status = status;
+    /**
+     * The whole output of the process behind the refusal, or null.
+     * @type {string|null}
+     */
+    this.output = output;
   }
 }
 
@@ -87,7 +94,9 @@ export class JsonClient {
     const answer = await this.#fetch(url, options);
     const explained = (answer.headers.get(CONTENT_TYPE) ?? '').startsWith(JSON_MEDIA_TYPE);
     if (answer.ok) return answer.json();
-    throw new RequestRefused(answer.status, explained ? (await answer.json())[ErrorKey.ERROR] : answer.statusText);
+    if (!explained) throw new RequestRefused(answer.status, answer.statusText);
+    const refusal = await answer.json();
+    throw new RequestRefused(answer.status, refusal[ErrorKey.ERROR], refusal[ErrorKey.OUTPUT] ?? null);
   }
 }
 
@@ -214,10 +223,31 @@ export class PlanBuilderApi {
   /**
    * @param {Object} plan A plan document.
    * @param {string} mode A `RunMode` value.
+   * @param {boolean} overrideValidation Whether a run needing a validated plan starts
+   *   without one, as developer mode allows.
    * @returns {Promise<Object>} The started demo's status.
    */
-  run(plan, mode) {
-    return this.#client.post(this.url(PlanBuilderRoute.RUN), { [RunRequestKey.PLAN]: plan, [RunRequestKey.MODE]: mode });
+  run(plan, mode, overrideValidation = false) {
+    const override = overrideValidation ? { [RunRequestKey.OVERRIDE_VALIDATION]: true } : {};
+    return this.#client.post(this.url(PlanBuilderRoute.RUN), { [RunRequestKey.PLAN]: plan, [RunRequestKey.MODE]: mode, ...override });
+  }
+
+  /**
+   * @param {Object} plan A plan document.
+   * @returns {Promise<Object>} The `ValidationReport`: how each step of the selected
+   *   robot fared in a copy of the twin.
+   */
+  validate(plan) {
+    return this.#client.post(this.url(PlanBuilderRoute.VALIDATE), { [ValidationRequestKey.PLAN]: plan });
+  }
+
+  /**
+   * @param {string} model A robot model's name.
+   * @returns {Promise<Object>} The `RobotReach`: what each arm of the model reaches and
+   *   the table it works at.
+   */
+  reach(model) {
+    return this.#client.post(this.url(PlanBuilderRoute.REACH), { [ReachRequestKey.ROBOT]: model });
   }
 
   /**
@@ -228,10 +258,35 @@ export class PlanBuilderApi {
   }
 
   /**
+   * @returns {Promise<Object>} The `RobotPosture` the real robot's drivers reported
+   *   last; empty while the plan builder is not attached to the real robot.
+   */
+  posture() {
+    return this.#client.get(this.url(PlanBuilderRoute.POSTURE));
+  }
+
+  /**
    * @returns {Promise<Object>} The stopped demo's status.
    */
   stop() {
     return this.#client.post(this.url(PlanBuilderRoute.RUN_STOP), {});
+  }
+
+  /**
+   * @returns {Promise<Object>} The status of the demo started last, its safety stop
+   *   acknowledged.
+   */
+  acknowledge() {
+    return this.#client.post(this.url(PlanBuilderRoute.RUN_ACKNOWLEDGE), {});
+  }
+
+  /**
+   * @param {Object} plan A plan document, whose robot looks.
+   * @param {string} region A `RegionKind` value: where the robot looks.
+   * @returns {Promise<Object>} The `SceneScan`: the plan's objects after the scan.
+   */
+  scan(plan, region = RegionKind.TABLE) {
+    return this.#client.post(this.url(PlanBuilderRoute.SCAN), { [ScanRequestKey.PLAN]: plan, [ScanRequestKey.REGION]: { [DetectionRegionKey.KIND]: region } });
   }
 
   /**

@@ -22,6 +22,7 @@ from uuid import uuid4
 
 from typing_extensions import List, Optional, Sequence
 
+from cramera.cram_imports import CramImports
 from cramera.locations import DataLocations
 from cramera_protocol.bundle.files import BundleFile
 from cramera_laboratory.resources import RESOURCES_DIRECTORY, LaboratoryResource
@@ -212,8 +213,7 @@ class TaskProcess:
                 return False
             if importlib.util.find_spec(LaboratoryTask.COMMAND) is None:
                 return False
-            from cramera_bridge.laboratory import command
-
+            command = CramImports().module(LaboratoryTask.COMMAND)
             return (
                 hasattr(command, "prepare_preview")
                 and hasattr(command, "runner")

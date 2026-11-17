@@ -50,7 +50,7 @@ class ForwardCamera:
     Stands in for a robot's camera: it looks along the world's x axis from the root.
     """
 
-    root_T_forward_view: HomogeneousTransformationMatrix
+    world_T_forward_view: HomogeneousTransformationMatrix
     """
     The camera's pose, its x axis along the direction it looks.
     """

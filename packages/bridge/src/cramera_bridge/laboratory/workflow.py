@@ -1430,7 +1430,7 @@ class LaboratoryWorkflowDemo(VesselTaskDemo):
             environment=environment,
             robot=RobotSpecification(
                 semantic_annotation_type=PR2,
-                odom_T_robot_start=HomogeneousTransformationMatrix.from_xyz_rpy(
+                odometry_T_robot_start=HomogeneousTransformationMatrix.from_xyz_rpy(
                     x=RACK_STAND.x, y=RACK_STAND.y, yaw=RACK_STAND.heading
                 ),
             ),

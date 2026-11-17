@@ -35,6 +35,14 @@ def test_the_demo_is_named_after_the_plan(plan):
     assert rendered.file_name in rendered.source
 
 
+def test_a_demo_of_a_plan_named_with_spaces_has_them_as_underscores(plan):
+    plan.name = "milk to  table"
+    rendered = DemoTemplate().render(DemoDocument(plan=plan))
+    assert rendered.file_name == f"milk_to__table{DEMO_SUFFIX}"
+    compile(rendered.source, rendered.file_name, "exec")
+    assert demo_document(rendered.source).plan.name == "milk to  table"
+
+
 def test_the_template_is_python_of_its_own(tmp_path):
     source = TEMPLATE.read_text(encoding="utf-8")
     compile(source, TEMPLATE.name, "exec")

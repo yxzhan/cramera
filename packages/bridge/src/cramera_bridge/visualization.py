@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
-from typing_extensions import TYPE_CHECKING, Any, Callable, Optional
+from typing_extensions import Any, Callable, Optional
 
 from cramera.locations import DataLocations
 from cramera_bridge.detections import DetectionRecorder
@@ -27,14 +27,16 @@ from cramera_protocol.live_messages import RecordingState
 from cramera_bridge.questions.live import WorldHighlightKeys
 from cramera_bridge.questions.workspace_classes import WorkspaceClassIndex
 from cramph.executor import Executor, StatechartExecutor, TickingExecutorExtension
+from cramph.state_history import (
+    StateHistory,
+    StateHistoryItem,
+    StateHistoryObserver,
+)
 from semantic_digital_twin.callbacks.callback import (
     ModelChangeCallback,
     StateChangeCallback,
 )
 from semantic_digital_twin.world import World
-
-if TYPE_CHECKING:
-    from cramph.state_history import StateHistoryItem
 
 ROS_MODULES = ("rclpy", "visualization_msgs")
 """
@@ -102,10 +104,14 @@ class PublishedModelChange(ModelChangeCallback):
 
 
 @dataclass
-class PublishedPlanProgress(TickingExecutorExtension):
+class PublishedPlanProgress(TickingExecutorExtension, StateHistoryObserver):
     """
     Publishes the plan an executor compiled, and after every tick the nodes that started
     and ended in it and the statechart's state.
+
+    It also follows every state the plan's history records, which on the real robot is
+    the only sign of progress: the motion server ticks the plan there, and the executor
+    takes over the states it reports.
     """
 
     publisher: LivePublisher = field(kw_only=True)
@@ -120,9 +126,11 @@ class PublishedPlanProgress(TickingExecutorExtension):
 
     def after_compile(self, executor: Executor) -> None:
         """
-        Publish the plan the executor compiled, and the nodes its first tick started.
+        Publish the plan the executor compiled, and the nodes its first tick started,
+        and follow every state its history records.
         """
         self.publisher.begin_plan(executor)
+        executor.statechart.state_history.add_observer(self)
         self.report(executor)
 
     def after_recompile(self, executor: StatechartExecutor) -> None:
@@ -134,10 +142,21 @@ class PublishedPlanProgress(TickingExecutorExtension):
     def after_tick(self, executor: StatechartExecutor) -> None:
         self.report(executor)
 
+    def on_state_change(self, history: StateHistory) -> None:
+        """
+        Publish the nodes that started and ended in the state the history recorded, and
+        the plan again when any did.
+        """
+        if self.report_nodes(history):
+            with self.publisher.world_lock:
+                self.publisher.refresh_plan()
+
     def after_run(self, executor: Executor) -> None:
         """
         Publish the state the plan left.
         """
+        executor.statechart.state_history.remove_observer(self)
+        self.report_nodes(executor.statechart.state_history)
         self.publisher.end_plan(executor)
 
     def report(self, executor: Executor) -> None:
@@ -148,18 +167,29 @@ class PublishedPlanProgress(TickingExecutorExtension):
         :param executor: The executor running the plan.
         """
         statechart = executor.statechart
-        history = statechart.state_history
-        moment = history.latest_item
-        changed = False
-        if moment is not None and moment is not self.reported:
-            self.reported = moment
-            for node in history.nodes_started_in_latest_item():
-                self.publisher.observe_node_started(node)
-                changed = True
-            for node in history.nodes_ended_in_latest_item():
-                self.publisher.observe_node_ended(node)
-                changed = True
+        changed = self.report_nodes(statechart.state_history)
         self.publisher.observe_tick(statechart, changed)
+
+    def report_nodes(self, history: StateHistory) -> bool:
+        """
+        Publish the nodes that started and ended in the newest state the history
+        recorded, unless it was published already.
+
+        :param history: The history of the plan's statechart.
+        :return: Whether any node started or ended.
+        """
+        moment = history.latest_item
+        if moment is None or moment is self.reported:
+            return False
+        self.reported = moment
+        changed = False
+        for node in history.nodes_started_in_latest_item():
+            self.publisher.observe_node_started(node)
+            changed = True
+        for node in history.nodes_ended_in_latest_item():
+            self.publisher.observe_node_ended(node)
+            changed = True
+        return changed
 
 
 # %% the backend
@@ -213,10 +243,10 @@ class LiveVisualization:
     """
 
     detect_events: bool = field(
-        default_factory=lambda: os.environ.get(
-            DetectionEnvironmentVariable.DETECT_EVENTS
+        default_factory=lambda: (
+            os.environ.get(DetectionEnvironmentVariable.DETECT_EVENTS)
+            == DETECTION_ENABLED
         )
-        == DETECTION_ENABLED
     )
     """
     Whether segmind's detectors watch the run, so the viewer shows what they saw and the
@@ -256,7 +286,7 @@ class LiveVisualization:
             publisher = LivePublisher(
                 locations=self.locations,
                 class_index=(
-                    WorkspaceClassIndex.of_installed_packages()
+                    WorkspaceClassIndex.installed()
                     if self.class_index is None
                     else self.class_index
                 ),

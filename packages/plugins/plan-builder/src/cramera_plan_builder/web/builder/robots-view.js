@@ -33,13 +33,12 @@ export const EMPTY_FOLDER = 'No folders or URDF files here.';
  */
 export const EnvironmentNote = Object.freeze({
   EMPTY_FLOOR: 'The robots start on an empty floor.',
-  NONE_OFFERED:
-    'No environment is offered yet. An environment is a scene without a robot, such as one made in the Scene Builder, imported from a USD stage or loaded from a URDF below; the robots start on an empty floor until one is there.',
+  NONE_OFFERED: 'No environment yet: make one in the Scene Builder or load a URDF below. Until then the robots start on an empty floor.',
   /**
    * @param {string} label The environment's name for people.
    * @returns {string} What the section says about a chosen environment.
    */
-  chosen: (label) => `The robots start in ${label}; place them and the objects in the 3D view.`,
+  chosen: (label) => `Place the robots and objects in ${label} in the 3D view.`,
 });
 
 // %% environment

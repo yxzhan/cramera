@@ -213,12 +213,14 @@ export function pageLinksOf(info, url) {
 
 /**
  * @param {Object} info The viewer's information.
- * @returns {string} The viewer's version, with the commit and time of a published build.
+ * @returns {string} The viewer's version, with the commit and time of a published build
+ *   and the build of the deployment it runs in.
  */
 export function versionOf(info) {
   const build = info[ViewerInfoKey.BUILD];
   const stamp = build ? ` · ${build[BuildKey.COMMIT].slice(0, SHORT_COMMIT)} · ${build[BuildKey.BUILT_AT]}` : '';
-  return `v${info[ViewerInfoKey.VERSION] ?? '?'}${stamp}`;
+  const deployment = info[ViewerInfoKey.DEPLOYMENT] ? ` · build ${info[ViewerInfoKey.DEPLOYMENT]}` : '';
+  return `v${info[ViewerInfoKey.VERSION] ?? '?'}${stamp}${deployment}`;
 }
 
 // %% header

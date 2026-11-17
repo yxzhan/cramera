@@ -115,6 +115,36 @@ class SilentPlugin(ViewerPlugin):
         return "0.1.0"
 
 
+@dataclass
+class RecordingPlugin(ViewerPlugin):
+    """
+    A plugin writing down when the viewer asks for its routes and when it starts it.
+    """
+
+    plugin_name: str
+    """
+    The name the plugin reports.
+    """
+
+    events: List[str]
+    """
+    What the viewer asked of the plugins, in order, shared between plugins.
+    """
+
+    def name(self) -> str:
+        return self.plugin_name
+
+    def version(self) -> str:
+        return "0.1.0"
+
+    def routes(self, context: PluginContext) -> List[RouteDeclaration]:
+        self.events.append(f"{self.plugin_name} routes")
+        return []
+
+    def start(self) -> None:
+        self.events.append(f"{self.plugin_name} start")
+
+
 @dataclass(frozen=True)
 class FactoryEntryPoint:
     """

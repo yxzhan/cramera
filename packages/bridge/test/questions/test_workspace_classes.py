@@ -75,3 +75,13 @@ def test_an_unknown_name_is_missing():
     with pytest.raises(KeyError):
         WorkspaceClassNamespace()["Nothing"]
     assert WorkspaceClassIndex().resolve("Nothing") is None
+
+
+# %% the installed packages' index, read once
+
+
+def test_the_installed_packages_are_indexed_once_per_process():
+    assert WorkspaceClassIndex.installed() is WorkspaceClassIndex.installed()
+    assert (
+        WorkspaceClassIndex.installed() == WorkspaceClassIndex.of_installed_packages()
+    )

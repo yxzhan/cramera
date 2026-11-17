@@ -228,22 +228,6 @@ class ScenePose(Enum):
     """
 
 
-class GarmiDrive(Enum):
-    """
-    How fast GARMI's base moves, in metres and radians per second.
-    """
-
-    TRANSLATION = 0.1
-    """
-    Along the floor.
-    """
-
-    ROTATION = 0.1
-    """
-    About the vertical.
-    """
-
-
 class SamplingSeed(IntEnum):
     """
     The seeds the plan's locations draw from.
@@ -440,16 +424,13 @@ class GarmiApartmentDemo(RobotTaskDemo):
 
 def demo() -> GarmiApartmentDemo:
     """
-    :return: The task in the apartment, GARMI at its start driving at the
-        demonstration's speed.
+    :return: The task in the apartment, GARMI at its start.
     """
     return GarmiApartmentDemo(
         environment=GarmiApartmentEnvironment(),
         robot=RobotSpecification(
             semantic_annotation_type=Garmi,
-            odom_T_robot_start=ScenePose.GARMI_START.value.transform,
-            drive_translation_velocity_limits=GarmiDrive.TRANSLATION.value,
-            drive_rotation_velocity_limits=GarmiDrive.ROTATION.value,
+            odometry_T_robot_start=ScenePose.GARMI_START.value.transform,
         ),
         name=NAME,
         task=TASK,

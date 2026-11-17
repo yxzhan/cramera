@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from importlib.metadata import version
 from pathlib import Path
 
-from typing_extensions import List
+from typing_extensions import List, Optional
 
 from cramera.branding import Branding
 from cramera.confinement import ConfinedDirectory
@@ -72,6 +72,11 @@ class ViewerApplication:
     Reads the live publisher on this machine for pages of other devices.
     """
 
+    deployment: Optional[str] = None
+    """
+    Which build of the deployment the viewer runs in, or None outside a deployment.
+    """
+
     def router(self) -> Router:
         """
         :return: The router of every viewer and plugin route; the browser files come
@@ -102,7 +107,8 @@ class ViewerApplication:
 
     def add_plugin_routes(self, router: Router) -> None:
         """
-        :param router: The router receiving each plugin's routes below its prefix.
+        :param router: The router receiving each plugin's routes below its prefix;
+            the plugins start once every plugin's routes are built.
         """
         context = PluginContext(catalog=self.catalog, locations=self.locations)
         for plugin in self.plugins:
@@ -110,6 +116,8 @@ class ViewerApplication:
                 router.add(
                     declaration.route(f"{ViewerRoute.PLUGIN_API}{plugin.name()}/")
                 )
+        for plugin in self.plugins:
+            plugin.start()
 
     def close(self) -> None:
         """
@@ -130,6 +138,7 @@ class ViewerApplication:
                 version=version("cramera"),
                 plugins=[plugin.info() for plugin in self.plugins],
                 logo_text=self.branding.text(),
+                deployment=self.deployment,
             )
         )
 

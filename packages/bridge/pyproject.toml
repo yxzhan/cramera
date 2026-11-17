@@ -16,6 +16,7 @@ dependencies = [
     "cramera-protocol==1.0.0",
     "numpy",
     "scipy",
+    "psutil",
     "sqlalchemy>=2.0",
     "typing_extensions>=4.8",
 ]
@@ -24,6 +25,7 @@ classifiers = ["Programming Language :: Python :: 3", "Operating System :: OS In
 [project.scripts]
 cramera-live = "cramera_bridge.command_line:live"
 cramera-onboard = "cramera_bridge.command_line:onboard"
+cramera-preflight = "cramera_bridge.real_robot:main"
 cramera-record-answers = "cramera_bridge.questions.answer_recording:main"
 cramera-record-classes = "cramera_bridge.scenes.bundle_classes:main"
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import socket
+from dataclasses import dataclass
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -14,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from cramera.exceptions import MalformedRequestBody, UnknownScene
+from cramera.exceptions import MalformedRequestBody, UnknownScene, ViewerError
 from cramera.http import server as server_module
 from cramera.http.addresses import (
     EVERY_ADDRESS,
@@ -319,6 +320,90 @@ def test_viewer_and_protocol_errors_become_error_answers():
         json.loads(unknown_answer.body)[ErrorKey.ERROR] == UnknownScene("x").message()
     )
     assert answerer.answer(request(path="/m")).status is HTTPStatus.BAD_REQUEST
+
+
+@dataclass
+class FailureWithOutput(ViewerError):
+    """
+    A refusal whose cause printed more than its message says.
+    """
+
+    output: str
+    """
+    What the cause printed.
+    """
+
+    def message(self) -> str:
+        return "It failed."
+
+    def diagnostic_output(self) -> str:
+        return self.output
+
+
+def test_the_output_behind_an_error_is_answered_apart_from_its_message():
+    def failing(_):
+        raise FailureWithOutput("a traceback\nand warnings")
+
+    router = Router([ExactRoute(HttpMethod.GET, "/f", failing)])
+    answer = RequestAnswerer(router=router, policy=OriginPolicy()).answer(
+        request(path="/f")
+    )
+
+    assert json.loads(answer.body) == {
+        ErrorKey.ERROR: "It failed.",
+        ErrorKey.OUTPUT: "a traceback\nand warnings",
+    }
+
+
+def test_an_error_without_output_is_answered_with_its_message_only():
+    def unknown(_):
+        raise UnknownScene("x")
+
+    router = Router([ExactRoute(HttpMethod.GET, "/u", unknown)])
+    answer = RequestAnswerer(router=router, policy=OriginPolicy()).answer(
+        request(path="/u")
+    )
+
+    assert json.loads(answer.body) == {ErrorKey.ERROR: UnknownScene("x").message()}
+
+
+def test_an_unexpected_error_in_a_route_is_answered_with_its_text_and_logged(caplog):
+    def broken(_):
+        raise KeyError("missing answer")
+
+    router = Router([ExactRoute(HttpMethod.GET, "/broken", broken)])
+    answerer = RequestAnswerer(router=router, policy=OriginPolicy())
+    with caplog.at_level("ERROR", logger=server_module.__name__):
+        answer = answerer.answer(request(path="/broken"))
+    assert answer.status is HTTPStatus.INTERNAL_SERVER_ERROR
+    assert json.loads(answer.body)[ErrorKey.ERROR] == "KeyError: 'missing answer'"
+    assert "Traceback" in caplog.text and "missing answer" in caplog.text
+
+
+def test_the_server_keeps_serving_after_an_unexpected_error_in_a_route():
+    def broken(_):
+        raise RuntimeError("the answer file is broken")
+
+    def fine(_):
+        return Response.of_json({"fine": True})
+
+    router = Router(
+        [
+            ExactRoute(HttpMethod.GET, "/broken", broken),
+            ExactRoute(HttpMethod.GET, "/fine", fine),
+        ]
+    )
+    answerer = RequestAnswerer(router=router, policy=OriginPolicy())
+    with HttpServer(answerer=answerer) as server:
+        with pytest.raises(urllib.error.HTTPError) as failed:
+            urllib.request.urlopen(server.url() + "/broken")
+        assert failed.value.code == HTTPStatus.INTERNAL_SERVER_ERROR
+        assert (
+            json.loads(failed.value.read())[ErrorKey.ERROR]
+            == "RuntimeError: the answer file is broken"
+        )
+        with urllib.request.urlopen(server.url() + "/fine") as answer:
+            assert json.loads(answer.read()) == {"fine": True}
 
 
 def test_the_answerer_refuses_before_routing():

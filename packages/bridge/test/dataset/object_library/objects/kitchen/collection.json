@@ -1,1 +1,1 @@
-{"categories": [{"key": "kitchen", "title": "Kitchen"}], "objects": [{"slug": "cup_with_lid", "name": "Cup with Lid"}]}
+{"categories": [{"key": "kitchen", "title": "Kitchen"}], "objects": [{"slug": "cup_with_lid", "name": "Cup with Lid", "grasp": "from_above"}]}

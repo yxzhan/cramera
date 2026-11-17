@@ -21,6 +21,7 @@ from cramera_bridge.exceptions import (
 )
 from cramera_bridge.geometry import NumericPose
 from cramera_bridge.live.activity import SimulationActivity
+from cramera_bridge.live.world_lock import PublishedWorldLock
 from cramera_bridge.robots import RobotParts
 from cramera_protocol.live_messages import TeleoperationRequest
 from semantic_digital_twin.datastructures.definitions import GripperState
@@ -220,7 +221,7 @@ class TeleoperationDriver:
     Tells whether a plan moves the robot, in which case the driver stands aside.
     """
 
-    world_lock: threading.RLock
+    world_lock: PublishedWorldLock
     """
     The lock every reader and writer of the world holds.
     """

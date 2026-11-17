@@ -248,6 +248,14 @@ class ViewerPlugin(ABC):
         """
         return None
 
+    def start(self) -> None:
+        """
+        Begin what the plugin does in the background; the viewer calls it once every
+        plugin's routes are built, before it serves.
+
+        Nothing by default.
+        """
+
     def close(self) -> None:
         """
         Release what the plugin owns, such as a simulation its routes started; the

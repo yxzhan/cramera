@@ -17,6 +17,7 @@ from cramera_plan_builder.exceptions import (
     ConstraintSubjectMissing,
 )
 from cramera_protocol.live_messages import MonitorSpecification
+from cramera_protocol.robot_profile import CameraMount
 from cramera_protocol.plan_builder import (
     ActionFieldKind,
     ActionSchema,
@@ -105,17 +106,36 @@ class ConstraintCompiler:
     The rules and how lengths are read.
     """
 
+    camera_mount: Optional[CameraMount] = None
+    """
+    How the camera of the deployment's robot is mounted, which decides the rules it is
+    offered; None when no profile says, which offers every rule.
+    """
+
     @classmethod
-    def of_file(cls, path: Path = RULE_BOOK) -> ConstraintCompiler:
+    def of_file(
+        cls, path: Path = RULE_BOOK, camera_mount: Optional[CameraMount] = None
+    ) -> ConstraintCompiler:
         """
         :param path: A rule book file.
+        :param camera_mount: How the camera of the deployment's robot is mounted.
         :return: The compiler of its rules.
         """
         return cls(
             book=ConstraintRuleBook.from_json(
                 json.loads(path.read_text(encoding="utf-8"))
-            )
+            ),
+            camera_mount=camera_mount,
         )
+
+    def offered_rules(self) -> List[ConstraintRule]:
+        """
+        :return: The rules offered to the deployment's robot, in the order they are
+            tried.
+        """
+        return [
+            rule for rule in self.book.rules if rule.is_offered_to(self.camera_mount)
+        ]
 
     def compile(
         self, request: ConstraintText, action: Optional[ActionSchema] = None
@@ -168,9 +188,10 @@ class ConstraintCompiler:
     def rule_for(self, sentence: str) -> Optional[ConstraintRule]:
         """
         :param sentence: A sentence in lowercase.
-        :return: The first rule whose phrasing it matches, or None.
+        :return: The first rule offered to the robot whose phrasing it matches, or
+            None.
         """
-        for rule in self.book.rules:
+        for rule in self.offered_rules():
             if re.search(rule.phrasing, sentence) is not None:
                 return rule
         return None

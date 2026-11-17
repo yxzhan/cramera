@@ -6,13 +6,15 @@ sources without importing them; a class is imported when a query first names it.
 from __future__ import annotations
 
 import ast
-import importlib
 import importlib.util
+from functools import cache
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
 from typing_extensions import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+from cramera.cram_imports import CramImports
 
 PYTHON_SUFFIX = ".py"
 """
@@ -133,7 +135,7 @@ class ClassLocation:
         """
         :return: The class, importing its module.
         """
-        return vars(importlib.import_module(self.module))[self.name]
+        return vars(CramImports().module(self.module))[self.name]
 
     @staticmethod
     def is_generated(name: str) -> bool:
@@ -276,6 +278,15 @@ class WorkspaceClassIndex:
                 list(specification.submodule_search_locations)[0]
             )
         return cls.of_package_directories(directories)
+
+    @classmethod
+    @cache
+    def installed(cls) -> WorkspaceClassIndex:
+        """
+        :return: The index of every installed package's classes, read once per process,
+            as the installed sources do not change while it runs.
+        """
+        return cls.of_installed_packages()
 
     def candidates(self, name: str) -> Tuple[ClassLocation, ...]:
         """

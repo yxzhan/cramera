@@ -14,11 +14,13 @@ from http.client import HTTPException
 from urllib.error import URLError
 from urllib.request import urlopen
 
+from cramera.cram_imports import CramImports
 from cramera.http.messages import Response
 from cramera_laboratory.exceptions import RobotDemoUnavailable, UnknownLiveRead
 from cramera_laboratory.resources import LaboratoryResource, LaboratoryShelf
 from cramera_laboratory.task_runs import TaskProcess
 from cramera_protocol.laboratory.physics import InstalledLaboratory
+from cramera_protocol.laboratory.runs import LaboratoryTask
 from cramera_protocol.live import LiveRoute
 
 LIVE_READS = frozenset(
@@ -79,8 +81,7 @@ class RobotLaboratoryView:
         """
         if not self.task.available():
             raise RobotDemoUnavailable(ROBOT_SETUP)
-        from cramera_bridge.laboratory import command
-
+        command = CramImports().module(LaboratoryTask.COMMAND)
         if not hasattr(command, "prepare_preview"):
             raise RobotDemoUnavailable(ROBOT_SETUP)
         with self.preparation:

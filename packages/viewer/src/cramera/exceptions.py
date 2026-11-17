@@ -27,6 +27,13 @@ class ViewerError(ProtocolError):
         """
         return HTTPStatus.BAD_REQUEST
 
+    def diagnostic_output(self) -> str | None:
+        """
+        :return: The whole output of the process behind the error, answered apart from
+            its message, or None when there is none.
+        """
+        return None
+
 
 @dataclass
 class PathOutsideDirectory(ViewerError):

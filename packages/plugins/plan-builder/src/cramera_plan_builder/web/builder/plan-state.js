@@ -9,6 +9,8 @@ import {
   ActionFieldKind,
   ActionSchemaKey,
   DestinationKey,
+  DetectedObjectText,
+  DetectionRegionKey,
   ObjectModelKey,
   PlacementMode,
   PlanBuilderCatalogKey,
@@ -17,8 +19,12 @@ import {
   PlannedObjectKey,
   PlannedRobotKey,
   PlanStepKey,
+  RegionKind,
   RobotModelKey,
+  RobotProfileKey,
+  SkillKey,
   StepConstraintKey,
+  ZoneKey,
 } from '../../../protocol.js';
 import { PlanPose, PoseIndex } from './poses.js';
 
@@ -57,6 +63,7 @@ const Placement = Object.freeze({
   OBJECT_HEIGHT: 0.8,
   OBJECT_SPREAD: 0.15,
   PUT_DOWN_BESIDE: 0.3,
+  MARKER_AHEAD: 0.6,
 });
 
 /**
@@ -92,6 +99,12 @@ export class PlanState {
   #catalog;
 
   /**
+   * Whether the palette offers every native action rather than the profile's skills.
+   * @type {boolean}
+   */
+  #developerMode = false;
+
+  /**
    * The plan document.
    * @type {Object}
    */
@@ -102,6 +115,13 @@ export class PlanState {
    * @type {string|null}
    */
   #activeRobot;
+
+  /**
+   * Rests a marker's pose on the surface below it; the pose itself until the page knows
+   * the surfaces.
+   * @type {function(Array<number>): Array<number>}
+   */
+  #snapMarker = (pose) => pose;
 
   /**
    * @param {Object} catalog The plan builder's catalog.
@@ -244,6 +264,101 @@ export class PlanState {
     if (!schema[ActionSchemaKey.AVAILABLE]) return schema[ActionSchemaKey.UNAVAILABLE_REASON] ?? 'unavailable';
     const lacking = PlanState.fields(schema).find((field) => field[ActionFieldKey.REQUIRED] && field[ActionFieldKey.KIND] === ActionFieldKind.ENUM && this.choices(robot, field).length === 0);
     return lacking ? `${this.modelLabel(robot[PlannedRobotKey.MODEL])} offers no ${lacking[ActionFieldKey.ENUM_TYPE]} for field '${lacking[ActionFieldKey.NAME]}'` : null;
+  }
+
+  // %% skills
+
+  /**
+   * @returns {boolean} Whether the palette offers every native action rather than the
+   *   robot profile's skills.
+   */
+  developerMode() {
+    return this.#developerMode;
+  }
+
+  /**
+   * @param {boolean} enabled Whether the palette offers every native action.
+   */
+  setDeveloperMode(enabled) {
+    this.#developerMode = enabled;
+  }
+
+  /**
+   * @returns {Array<Object>} The robot profile's skills, in its order; empty without a
+   *   profile.
+   */
+  skills() {
+    return this.#catalog[PlanBuilderCatalogKey.PROFILE]?.[RobotProfileKey.SKILLS] ?? [];
+  }
+
+  /**
+   * @returns {boolean} Whether the palette offers the profile's skills: there are skills
+   *   and developer mode is off.
+   */
+  curated() {
+    return this.skills().length > 0 && !this.#developerMode;
+  }
+
+  /**
+   * @param {string} identifier A skill's identifier.
+   * @returns {Object|null} The profile's skill of that identifier, or null.
+   */
+  skill(identifier) {
+    return this.skills().find((skill) => skill[SkillKey.IDENTIFIER] === identifier) ?? null;
+  }
+
+  /**
+   * @param {Object} robot A robot of the plan.
+   * @returns {Array<Object>} The profile's skills whose action the robot can take.
+   */
+  offeredSkills(robot) {
+    return this.skills().filter((skill) => {
+      const schema = this.schema(skill[SkillKey.ACTION]);
+      return schema !== null && this.refusal(robot, schema) === null;
+    });
+  }
+
+  /**
+   * Add a step of a skill to the edited robot: a step of its action, starting with the
+   * skill's values.
+   * @param {string} identifier A skill of the robot profile.
+   * @param {number=} index Where the step goes; at the end by default.
+   * @returns {string} The step's identity.
+   * @throws {PlanRefused} When the profile has no such skill or the robot cannot take
+   *   its action.
+   */
+  addSkill(identifier, index = this.steps().length) {
+    const skill = this.skill(identifier);
+    if (skill === null) throw new PlanRefused(`The robot profile has no skill ${identifier}.`);
+    const added = this.addStep(skill[SkillKey.ACTION], index);
+    const step = this.step(added);
+    step[PlanStepKey.SKILL] = identifier;
+    Object.assign(step[PlanStepKey.VALUES], structuredClone(skill[SkillKey.VALUES] ?? {}));
+    return added;
+  }
+
+  /**
+   * @param {Object} step A step of a robot.
+   * @returns {string} The step's name: its skill's label, else its action's label, else
+   *   its action's identifier.
+   */
+  stepLabel(step) {
+    const skill = step[PlanStepKey.SKILL] ? this.skill(step[PlanStepKey.SKILL]) : null;
+    if (skill) return skill[SkillKey.LABEL];
+    return this.schema(step[PlanStepKey.ACTION])?.[ActionSchemaKey.LABEL] ?? step[PlanStepKey.ACTION];
+  }
+
+  /**
+   * @param {Object} step A step of a robot.
+   * @param {Object} schema Its action.
+   * @returns {Array<Object>} The fields a person edits on the step: those its skill
+   *   names while the palette offers skills, else every field.
+   */
+  shownFields(step, schema) {
+    const skill = step[PlanStepKey.SKILL] ? this.skill(step[PlanStepKey.SKILL]) : null;
+    const names = this.curated() ? skill?.[SkillKey.FIELDS] : null;
+    const fields = PlanState.fields(schema);
+    return names ? fields.filter((field) => names.includes(field[ActionFieldKey.NAME])) : fields;
   }
 
   /**
@@ -439,9 +554,10 @@ export class PlanState {
   }
 
   /**
-   * Add a step to the edited robot with the values it can run with right away: the
-   * first object, the robot's first choice or the field's default, a target ahead of
-   * the robot or beside the object it puts down.
+   * Add a step to the edited robot with the values it can start from: the robot's first
+   * choice or the field's default, a target ahead of the robot. Its objects are left
+   * for the person to choose, so no step acts on an object nobody chose; a target
+   * beside the object it puts down follows once that object is chosen.
    * @param {string} action The class name of an action the robot can take.
    * @param {number=} index Where the step goes; at the end by default.
    * @returns {string} The step's identity.
@@ -457,11 +573,9 @@ export class PlanState {
     const step = { [PlanStepKey.IDENTIFIER]: identifier, [PlanStepKey.ACTION]: action, [PlanStepKey.VALUES]: {}, [PlanStepKey.CONSTRAINTS]: [] };
     const values = step[PlanStepKey.VALUES];
     for (const field of PlanState.fields(schema)) {
-      if (field[ActionFieldKey.REQUIRED] && field[ActionFieldKey.KIND] === ActionFieldKind.BODY && this.objects().length > 0) values[field[ActionFieldKey.NAME]] = this.objects()[0][PlannedObjectKey.IDENTIFIER];
-    }
-    for (const field of PlanState.fields(schema)) {
-      if (!field[ActionFieldKey.REQUIRED]) continue;
-      const value = this.#defaultValue(robot, schema, field, step);
+      // a step looking for objects looks at the whole table unless told otherwise
+      if (!field[ActionFieldKey.REQUIRED] && field[ActionFieldKey.KIND] !== ActionFieldKind.REGION) continue;
+      const value = this.#defaultValue(robot, schema, field);
       if (value !== undefined) values[field[ActionFieldKey.NAME]] = value;
     }
     this.steps().splice(index, 0, step);
@@ -491,19 +605,42 @@ export class PlanState {
   }
 
   /**
+   * @param {function(Array<number>): Array<number>} snap Rests a marker's pose on the
+   *   surface below it, which every marker the plan is given from now on is.
+   */
+  setMarkerSnap(snap) {
+    this.#snapMarker = snap;
+  }
+
+  /**
+   * @returns {Array<Object>} The robot profile's named zones, none without a profile.
+   */
+  zones() {
+    return this.#catalog[PlanBuilderCatalogKey.PROFILE]?.[RobotProfileKey.ZONES] ?? [];
+  }
+
+  /**
    * @param {string} identifier A step of the edited robot.
    * @param {string} name The name of a field of the step's action.
    * @param {*} value Its JSON value; null leaves the field to the action's default.
    */
   setValue(identifier, name, value) {
-    const values = this.step(identifier)[PlanStepKey.VALUES];
+    const step = this.step(identifier);
+    const values = step[PlanStepKey.VALUES];
     if (value === null) delete values[name];
     else values[name] = value;
+    if (value === null || this.stepObject(step) !== value) return;
+    // a put-down step without a target yet takes one beside the object just chosen
+    for (const field of PlanState.fields(this.schema(step[PlanStepKey.ACTION]))) {
+      if (field[ActionFieldKey.ACCEPTS_SURFACE] && field[ActionFieldKey.REQUIRED] && values[field[ActionFieldKey.NAME]] === undefined) values[field[ActionFieldKey.NAME]] = { [DestinationKey.PLACEMENT]: PlacementMode.POSE, [DestinationKey.POSE]: this.#besideObject(step) };
+    }
   }
 
   /**
-   * Choose whether a field accepting a surface names a pose or a surface; a pose starts
-   * beside the step's object, a surface as the catalog's first surface type.
+   * Choose how a field accepting a surface names where the object goes: a pose or a
+   * marker starts beside the step's object, the marker resting on the surface below, a
+   * surface as the catalog's first surface type, a zone as the profile's first and on
+   * top of the first other object the step can name.
    * @param {string} identifier A step of the edited robot.
    * @param {string} name The name of a field accepting a surface.
    * @param {string} placement A `PlacementMode` value.
@@ -513,7 +650,34 @@ export class PlanState {
     const destination = { ...(step[PlanStepKey.VALUES][name] ?? {}), [DestinationKey.PLACEMENT]: placement };
     if (placement === PlacementMode.POSE) destination[DestinationKey.POSE] ??= this.#besideObject(step);
     if (placement === PlacementMode.SURFACE) destination[DestinationKey.SURFACE_TYPE] ??= this.#catalog[PlanBuilderCatalogKey.SURFACE_TYPES][0];
+    if (placement === PlacementMode.ZONE) destination[DestinationKey.ZONE] ??= this.zones()[0]?.[ZoneKey.IDENTIFIER];
+    if (placement === PlacementMode.ON_TOP_OF) destination[DestinationKey.OBJECT] ??= this.supportChoices(identifier)[0]?.value;
+    if (placement === PlacementMode.MARKER) destination[DestinationKey.POSE] = this.#snapMarker(destination[DestinationKey.POSE] ?? this.#besideObject(step) ?? this.#markerStart());
     step[PlanStepKey.VALUES][name] = destination;
+  }
+
+  /**
+   * Choose where a step looks for objects; a zone starts as the profile's first, a
+   * marker ahead of the robot or at the plan's first object.
+   * @param {string} identifier A step of the edited robot.
+   * @param {string} name The name of a region field.
+   * @param {string} kind A `RegionKind` value.
+   */
+  setRegion(identifier, name, kind) {
+    const region = { [DetectionRegionKey.KIND]: kind };
+    if (kind === RegionKind.ZONE) region[DetectionRegionKey.ZONE] = this.zones()[0]?.[ZoneKey.IDENTIFIER];
+    if (kind === RegionKind.MARKER) region[DetectionRegionKey.POSE] = this.#snapMarker(this.#markerStart());
+    this.step(identifier)[PlanStepKey.VALUES][name] = region;
+  }
+
+  /**
+   * @param {string} identifier A step of the edited robot.
+   * @returns {Array<{value: string, label: string}>} The objects the step can put its
+   *   object on top of: those its object fields can name, but its own object.
+   */
+  supportChoices(identifier) {
+    const own = this.stepObject(this.step(identifier));
+    return this.objectChoices(identifier).filter((choice) => choice.value !== own);
   }
 
   /**
@@ -528,18 +692,25 @@ export class PlanState {
 
   /**
    * @param {Object} step A step of the plan.
-   * @returns {Array<{field: string, pose: Array<number>, object: string|undefined}>}
-   *   The poses the step names: each pose field's pose, and each destination at a pose
-   *   with the object put down there.
+   * @returns {Array<{field: string, pose: Array<number>, object: string|undefined, marker: boolean}>}
+   *   The poses the step names: each pose field's pose, each destination at a pose or a
+   *   marker with the object put down there, and the marker a region lies around;
+   *   `marker` tells a marker, which slides over the surface below it.
    */
   targets(step) {
     const targets = [];
     for (const field of PlanState.fields(this.schema(step[PlanStepKey.ACTION]) ?? {})) {
       const name = field[ActionFieldKey.NAME];
       const value = step[PlanStepKey.VALUES][name];
-      if (!POSE_KINDS.includes(field[ActionFieldKey.KIND]) || value === undefined) continue;
-      if (!field[ActionFieldKey.ACCEPTS_SURFACE]) targets.push({ field: name, pose: value, object: undefined });
-      else if (value[DestinationKey.PLACEMENT] !== PlacementMode.SURFACE && value[DestinationKey.POSE]) targets.push({ field: name, pose: value[DestinationKey.POSE], object: this.stepObject(step) });
+      if (value === undefined) continue;
+      if (field[ActionFieldKey.KIND] === ActionFieldKind.REGION) {
+        if (value[DetectionRegionKey.KIND] === RegionKind.MARKER && value[DetectionRegionKey.POSE]) targets.push({ field: name, pose: value[DetectionRegionKey.POSE], object: undefined, marker: true });
+        continue;
+      }
+      if (!POSE_KINDS.includes(field[ActionFieldKey.KIND])) continue;
+      const placement = value[DestinationKey.PLACEMENT] ?? PlacementMode.POSE;
+      if (!field[ActionFieldKey.ACCEPTS_SURFACE]) targets.push({ field: name, pose: value, object: undefined, marker: false });
+      else if ([PlacementMode.POSE, PlacementMode.MARKER].includes(placement) && value[DestinationKey.POSE]) targets.push({ field: name, pose: value[DestinationKey.POSE], object: this.stepObject(step), marker: placement === PlacementMode.MARKER });
     }
     return targets;
   }
@@ -551,9 +722,12 @@ export class PlanState {
    */
   setTarget(identifier, name, pose) {
     const step = this.step(identifier);
+    const values = step[PlanStepKey.VALUES];
     const field = PlanState.fields(this.schema(step[PlanStepKey.ACTION])).find((candidate) => candidate[ActionFieldKey.NAME] === name);
-    if (field?.[ActionFieldKey.ACCEPTS_SURFACE]) step[PlanStepKey.VALUES][name] = { [DestinationKey.PLACEMENT]: PlacementMode.POSE, [DestinationKey.POSE]: pose };
-    else step[PlanStepKey.VALUES][name] = pose;
+    if (field?.[ActionFieldKey.KIND] === ActionFieldKind.REGION) values[name] = { [DetectionRegionKey.KIND]: RegionKind.MARKER, [DetectionRegionKey.POSE]: this.#snapMarker(pose) };
+    else if (field?.[ActionFieldKey.ACCEPTS_SURFACE] && values[name]?.[DestinationKey.PLACEMENT] === PlacementMode.MARKER) values[name] = { [DestinationKey.PLACEMENT]: PlacementMode.MARKER, [DestinationKey.POSE]: this.#snapMarker(pose) };
+    else if (field?.[ActionFieldKey.ACCEPTS_SURFACE]) values[name] = { [DestinationKey.PLACEMENT]: PlacementMode.POSE, [DestinationKey.POSE]: pose };
+    else values[name] = pose;
   }
 
   /**
@@ -574,10 +748,10 @@ export class PlanState {
     for (const [name, value] of Object.entries(values)) {
       const field = fields.get(name);
       if (!field) problems.push(`${schema[ActionSchemaKey.LABEL]} has no field '${name}'.`);
-      else if (!this.#fits(robot, field, value)) problems.push(`Field '${name}' cannot be ${JSON.stringify(value)}.`);
+      else if (!this.#fits(robot, field, value, step)) problems.push(`“${field[ActionFieldKey.LABEL]}” cannot be ${JSON.stringify(value)}.`);
     }
     for (const field of fields.values()) {
-      if (field[ActionFieldKey.REQUIRED] && field[ActionFieldKey.KIND] !== ActionFieldKind.GRASP && values[field[ActionFieldKey.NAME]] === undefined) problems.push(`Field '${field[ActionFieldKey.NAME]}' needs a value.`);
+      if (field[ActionFieldKey.REQUIRED] && field[ActionFieldKey.KIND] !== ActionFieldKind.GRASP && values[field[ActionFieldKey.NAME]] === undefined) problems.push(`Needs a value for “${field[ActionFieldKey.LABEL]}”.`);
     }
     return problems;
   }
@@ -678,6 +852,40 @@ export class PlanState {
   }
 
   /**
+   * @param {string} identifier A step of the edited robot.
+   * @returns {Array<{value: string, label: string}>} What the step's object fields can
+   *   name: the plan's objects, then the object each earlier step of the robot that
+   *   looks for objects finds.
+   */
+  objectChoices(identifier) {
+    const choices = this.objects().map((item) => ({ value: item[PlannedObjectKey.IDENTIFIER], label: item[PlannedObjectKey.IDENTIFIER] }));
+    for (const step of this.steps()) {
+      if (step[PlanStepKey.IDENTIFIER] === identifier) break;
+      if (!this.looksForObjects(step)) continue;
+      choices.push({ value: `${DetectedObjectText.PREFIX}${step[PlanStepKey.IDENTIFIER]}`, label: `found by ${this.stepLabel(step)} (${step[PlanStepKey.IDENTIFIER]})` });
+    }
+    return choices;
+  }
+
+  /**
+   * @param {Object} step A step of the plan.
+   * @returns {boolean} Whether its action looks for objects in a region, so later steps
+   *   can name the object it finds.
+   */
+  looksForObjects(step) {
+    return PlanState.fields(this.schema(step[PlanStepKey.ACTION]) ?? {}).some((field) => field[ActionFieldKey.KIND] === ActionFieldKind.REGION);
+  }
+
+  /**
+   * Take over the plan's objects as a scan of the scene found them.
+   * @param {Array<Object>} objects The plan's objects after the scan: those it held,
+   *   moved, and the ones found new.
+   */
+  replaceObjects(objects) {
+    this.#plan[PlanKey.OBJECTS] = objects;
+  }
+
+  /**
    * @param {string} identifier The object's identity.
    * @param {Array<number>} pose Where it starts.
    */
@@ -700,14 +908,15 @@ export class PlanState {
   /**
    * @param {Object} robot The robot taking the step.
    * @param {Object} schema The step's action.
-   * @param {Object} field A required field of it.
-   * @param {Object} step The step being added, with its objects chosen.
-   * @returns {*} The field's starting value, or undefined to leave it for the person.
+   * @param {Object} field A required field of it, or its region field.
+   * @returns {*} The field's starting value, or undefined to leave it for the person: a
+   *   put-down target waits for the step's object.
    */
-  #defaultValue(robot, schema, field, step) {
+  #defaultValue(robot, schema, field) {
     const kind = field[ActionFieldKey.KIND];
     if (kind === ActionFieldKind.ENUM) return this.#defaultMember(robot, field);
-    if (POSE_KINDS.includes(kind) && field[ActionFieldKey.ACCEPTS_SURFACE]) return { [DestinationKey.PLACEMENT]: PlacementMode.POSE, [DestinationKey.POSE]: this.#besideObject(step) };
+    if (kind === ActionFieldKind.REGION) return { [DetectionRegionKey.KIND]: RegionKind.TABLE };
+    if (POSE_KINDS.includes(kind) && field[ActionFieldKey.ACCEPTS_SURFACE]) return undefined;
     if (kind === ActionFieldKind.POSE) return this.#nextTarget(robot, schema, field);
     if (kind in PLAIN_TYPES && kind !== ActionFieldKind.ANNOTATION) return field[ActionFieldKey.DEFAULT] ?? undefined;
     return undefined;
@@ -761,18 +970,56 @@ export class PlanState {
    * @param {Object} robot The robot taking the step.
    * @param {Object} field A field of the step's action.
    * @param {*} value A value of the step.
+   * @param {Object} step The step.
    * @returns {boolean} Whether the value fits the field's kind and the robot's choices.
    */
-  #fits(robot, field, value) {
+  #fits(robot, field, value, step) {
     const kind = field[ActionFieldKey.KIND];
     if (kind === ActionFieldKind.GRASP) return false;
-    if (kind === ActionFieldKind.BODY) return this.objects().some((item) => item[PlannedObjectKey.IDENTIFIER] === value);
+    if (kind === ActionFieldKind.BODY) return this.objectChoices(step[PlanStepKey.IDENTIFIER]).some((choice) => choice.value === value);
+    if (kind === ActionFieldKind.REGION) return this.#fitsRegion(value);
     if (kind === ActionFieldKind.ENUM) return this.choices(robot, field).includes(value);
     if (kind === ActionFieldKind.INTEGER) return Number.isInteger(value);
     if (kind in PLAIN_TYPES) return typeof value === PLAIN_TYPES[kind];
     if (!field[ActionFieldKey.ACCEPTS_SURFACE]) return PlanPose.isPose(value);
-    if (value?.[DestinationKey.PLACEMENT] === PlacementMode.SURFACE) return typeof value[DestinationKey.SURFACE_TYPE] === 'string';
+    const placement = value?.[DestinationKey.PLACEMENT];
+    if (placement === PlacementMode.SURFACE) return typeof value[DestinationKey.SURFACE_TYPE] === 'string';
+    if (placement === PlacementMode.ZONE) return this.#isZone(value[DestinationKey.ZONE]);
+    if (placement === PlacementMode.ON_TOP_OF) return this.supportChoices(step[PlanStepKey.IDENTIFIER]).some((choice) => choice.value === value[DestinationKey.OBJECT]);
     return PlanPose.isPose(value?.[DestinationKey.POSE]);
+  }
+
+  /**
+   * @param {*} value A region field's value.
+   * @returns {boolean} Whether it is a region of a known kind: a zone the profile names,
+   *   or a marker with its pose.
+   */
+  #fitsRegion(value) {
+    const kind = value?.[DetectionRegionKey.KIND];
+    if (kind === RegionKind.ZONE) return this.#isZone(value[DetectionRegionKey.ZONE]);
+    if (kind === RegionKind.MARKER) return PlanPose.isPose(value[DetectionRegionKey.POSE]);
+    return Object.values(RegionKind).includes(kind);
+  }
+
+  /**
+   * @param {*} identifier A zone's identifier.
+   * @returns {boolean} Whether the robot profile names the zone.
+   */
+  #isZone(identifier) {
+    return this.zones().some((zone) => zone[ZoneKey.IDENTIFIER] === identifier);
+  }
+
+  /**
+   * @returns {Array<number>} Where a new marker starts: at the plan's first object, else
+   *   a little ahead of the edited robot, upright.
+   */
+  #markerStart() {
+    const first = this.objects()[0];
+    if (first) return PlanPose.turned(first[PlannedObjectKey.POSE], 0);
+    const pose = this.activeRobot()?.[PlannedRobotKey.POSE] ?? PlanPose.of(0, 0, 0, 0);
+    const [x, y, z] = PlanPose.position(pose);
+    const yaw = PlanPose.yaw(pose);
+    return PlanPose.of(PlanPose.rounded(x + Placement.MARKER_AHEAD * Math.cos(yaw)), PlanPose.rounded(y + Placement.MARKER_AHEAD * Math.sin(yaw)), z, 0);
   }
 
   /**

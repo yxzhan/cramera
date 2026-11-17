@@ -18,6 +18,7 @@ from cramera_bridge.exceptions import (
 from coraplex.robot_plans.actions.composite.transporting import MoveAndPickUpAction
 from coraplex.robot_plans.actions.core.navigation import NavigateAction
 from coraplex.robot_plans.actions.core.pick_up import PickUpAction
+from cramera_bridge.live.constraints import ConstraintMonitorFactory
 from cramera_bridge.live.plan import DesignatorSummary, PLAN_NODE_PREFIX, PlanNodeStatus
 from cramera_protocol.live import LiveRoute
 from cramera_protocol.live_messages import (
@@ -31,6 +32,7 @@ from cramera_protocol.live_messages import (
 )
 from coraplex.robot_plans.actions.core.robot_body import ParkArmsAction
 from cramph.data_types import LifeCycleValues, ObservationStateValues
+from giskardpy.motion_statechart.monitors.cartesian_monitors import InFieldOfView
 from giskardpy.motion_statechart.tasks.cartesian_tasks import CartesianPose
 from krrood.entity_query_language.factories import a, variable
 from semantic_digital_twin.datastructures.definitions import TorsoState
@@ -335,6 +337,35 @@ def test_a_limit_must_be_a_number(publisher, small_plan):
     )
     with pytest.raises(InvalidConstraint):
         publisher.attach_constraint(request)
+
+
+def test_keeping_in_view_watches_the_target_through_the_robots_camera(robot_world):
+    request = ConstraintRequest(
+        target_plan_node=PlanNodeReference(identifier="step"),
+        monitor=MonitorSpecification(
+            monitor_type=ConstraintMonitorType.IN_FIELD_OF_VIEW,
+            parameters={"target": "base_link", "margin": 0.02},
+        ),
+    )
+
+    monitor = ConstraintMonitorFactory(robot_world.world).monitor(request)
+
+    assert isinstance(monitor, InFieldOfView)
+    assert monitor.camera is robot_world.robot.get_default_camera()
+    assert monitor.target.name.name == "base_link"
+    assert monitor.margin == 0.02
+
+
+def test_keeping_in_view_needs_a_robot(publisher, small_plan, kitchen):
+    request = ConstraintRequest(
+        target_plan_node=PlanNodeReference(identifier="step"),
+        monitor=MonitorSpecification(
+            monitor_type=ConstraintMonitorType.IN_FIELD_OF_VIEW,
+            parameters={"target": kitchen.milk.name.name},
+        ),
+    )
+    with pytest.raises(InvalidConstraint):
+        ConstraintMonitorFactory(kitchen.world).monitor(request)
 
 
 def test_pointing_needs_a_goal(publisher, small_plan):

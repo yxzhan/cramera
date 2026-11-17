@@ -11,13 +11,17 @@ from cramera_protocol.exceptions import (
     InvalidDocumentValue,
     UnsupportedProtocolVersion,
 )
-from cramera_protocol.geometry import Pose
+from cramera_protocol.geometry import Bounds, Pose, Vector3
 from cramera_protocol.live_messages import (
     ConstraintMonitorType,
     MonitorParameterKey,
     MonitorSpecificationKey,
 )
 from cramera_protocol.plan_builder import (
+    ArmReport,
+    ArmReportKey,
+    RobotPosture,
+    RobotPostureKey,
     CLASS_NAME_FORMAT_VERSION,
     ActionCatalog,
     ActionCatalogKey,
@@ -57,9 +61,27 @@ from cramera_protocol.plan_builder import (
     RunMode,
     RunRequest,
     RunState,
+    RunOutputMarker,
+    MonitorObservation,
+    PerceptionReport,
+    PerceptionReportKey,
+    ReportedObject,
+    ReportedObjectVerdict,
+    RunEvent,
+    RunEventKey,
+    RunEventKind,
+    RunMonitor,
     RunStatus,
+    StepState,
+    SafetyStop,
+    SafetyStopKey,
     RunStatusKey,
     StepConstraintKey,
+)
+from cramera_protocol.robot_profile import (
+    ExecutorKind,
+    PerceptionSettings,
+    SafetyLimits,
 )
 from cramera_protocol.version import CURRENT_VERSION, UNVERSIONED
 
@@ -177,6 +199,14 @@ def test_a_plan_of_identifiers_is_left_as_it_is(read_json):
     assert CLASS_NAMES.translated(current) is current
 
 
+def test_a_plan_of_format_1_3_is_read_as_the_same_plan_of_format_1_4(read_json):
+    data = read_json("plan_builder/plan.json")
+    current = PlanDocument.from_json(data)
+    earlier = PlanDocument.from_json({**data, PlanKey.FORMAT_VERSION: "1.3"})
+    assert PLAN_FORMAT_VERSION.to_json() == "1.4"
+    assert CLASS_NAMES.translated(earlier) == current
+
+
 def test_names_a_catalog_does_not_list_stay_for_its_check_to_report(read_json):
     legacy = PlanDocument.from_json(read_json("plan_builder/legacy/plan.json"))
     translated = SavedNames(actions={}, robots={}).translated(legacy)
@@ -253,6 +283,19 @@ def test_a_destination_names_its_placement_pose_and_surface():
     assert written[DestinationKey.PLACEMENT] == PlacementMode.SURFACE
     assert DestinationKey.POSE not in written
     assert Destination.from_json(written) == destination
+
+
+def test_a_zone_on_top_of_or_marker_destination_is_only_known_once_grounded():
+    zone = Destination(placement=PlacementMode.ZONE, zone="left_tray")
+    on_top = Destination(placement=PlacementMode.ON_TOP_OF, object="detected:step_2")
+    marker = Destination(
+        placement=PlacementMode.MARKER, pose=Pose(0.6, 0.2, 0.88, 0, 0, 0, 1)
+    )
+    for destination in (zone, on_top, marker):
+        assert destination.is_grounded_late
+        assert Destination.from_json(destination.to_json()) == destination
+    assert on_top.to_json()[DestinationKey.OBJECT] == "detected:step_2"
+    assert not Destination(pose=Pose(0, 0, 0, 0, 0, 0, 1)).is_grounded_late
 
 
 def test_a_plan_of_another_major_version_is_refused(read_json):
@@ -398,6 +441,12 @@ def test_a_run_request_with_an_unknown_mode_is_refused(read_json):
         )
 
 
+def test_each_mode_that_performs_executes_on_its_default_executor():
+    assert RunMode.STAGE.default_executor is None
+    assert RunMode.PERFORM.default_executor is ExecutorKind.KINEMATIC
+    assert RunMode.SIMULATE.default_executor is ExecutorKind.PHYSICS
+
+
 def test_the_run_status_reads_the_exit_and_the_log(read_json):
     data = read_json("plan_builder/run_status.json")
     status = RunStatus.from_json(data)
@@ -405,6 +454,138 @@ def test_the_run_status_reads_the_exit_and_the_log(read_json):
     assert status.mode is RunMode.PERFORM
     assert status.return_code == data[RunStatusKey.RETURN_CODE]
     assert status.log == data[RunStatusKey.LOG]
+
+
+def test_a_safety_stop_is_read_back_from_the_line_reporting_it():
+    stop = SafetyStop(constraint="Left arm workspace (tool 0.004 m outside)")
+    output = f"building the world\n{stop.to_output_line()}\nTraceback ...\n"
+
+    assert SafetyStop.from_output(output) == stop
+    assert stop.to_output_line().startswith(RunOutputMarker.SAFETY_STOP)
+
+
+def test_output_reporting_no_safety_stop_reads_as_none():
+    assert SafetyStop.from_output("the plan finished\n") is None
+
+
+def test_a_run_status_carries_its_safety_stop():
+    status = RunStatus(
+        state=RunState.SAFETY_STOPPED,
+        safety_stop=SafetyStop(constraint="Left arm workspace", acknowledged=True),
+    )
+    assert RunStatus.from_json(status.to_json()) == status
+    assert SafetyStopKey in BROWSER_ENUMERATIONS
+
+
+# %% run events
+
+
+def test_a_run_event_is_read_back_from_the_line_reporting_it():
+    event = RunEvent(
+        kind=RunEventKind.STEP,
+        step="step_3",
+        state=StepState.RETRYING,
+        attempt=1,
+        attempts=3,
+        arm="left",
+        reason="red_cube moved 0.05 m since the plan was grounded.",
+        next_attempt="detects its objects again and grounds the plan anew",
+    )
+
+    line = event.to_output_line()
+
+    assert line.startswith(RunOutputMarker.RUN_EVENT)
+    assert "\n" not in line
+    assert RunEvent.from_output_line(line) == event
+
+
+def test_a_perception_event_is_read_back_with_every_object_reported():
+    event = RunEvent(
+        kind=RunEventKind.PERCEPTION,
+        step="step_2",
+        perception=PerceptionReport(
+            target="red_cube",
+            type="plannedgraspable",
+            color="red",
+            box=Bounds(Vector3(0.475, 0.025, 0.83), Vector3(0.625, 0.175, 0.98)),
+            grounded=Vector3(0.55, 0.1, 0.905),
+            tolerance=0.02,
+            objects=[
+                ReportedObject(
+                    position=Vector3(0.79, 0.145, 0.905),
+                    size=Vector3(0.066, 0.061, 0.022),
+                    colors=["red"],
+                    verdict=ReportedObjectVerdict.OUTSIDE_BOX,
+                    distance=0.19,
+                )
+            ],
+            summary="red_cube was seen 19 cm from where the plan was validated.",
+        ),
+    )
+
+    read = RunEvent.from_output_line(event.to_output_line())
+
+    assert read == event
+    assert PerceptionReportKey in BROWSER_ENUMERATIONS
+
+
+def test_a_line_reporting_no_event_reads_as_none():
+    assert RunEvent.from_output_line("[run log] step_1: attempt 1/3 succeeded") is None
+
+
+def test_an_event_leaves_out_what_does_not_concern_it():
+    event = RunEvent(
+        kind=RunEventKind.MONITOR,
+        step="step_3",
+        monitor=RunMonitor.LOOK_AT,
+        observation=MonitorObservation.HOLDS,
+        target="red_cube",
+    )
+    assert set(event.to_json()) == {
+        RunEventKey.KIND,
+        RunEventKey.STEP,
+        RunEventKey.MONITOR,
+        RunEventKey.OBSERVATION,
+        RunEventKey.TARGET,
+    }
+
+
+def test_a_run_status_carries_its_events():
+    status = RunStatus(
+        state=RunState.RUNNING,
+        events=[
+            RunEvent(kind=RunEventKind.STEP, step="step_1", state=StepState.PENDING),
+            RunEvent(kind=RunEventKind.SAFETY_STOP, constraint="Left arm workspace"),
+        ],
+    )
+    assert RunStatus.from_json(status.to_json()) == status
+    for enumeration in (StepState, RunEventKind, RunMonitor, MonitorObservation):
+        assert enumeration in BROWSER_ENUMERATIONS
+
+
+def test_a_posture_carries_when_each_arm_last_reported():
+    posture = RobotPosture(
+        joint_positions={"left_shoulder_pan_joint": 0.3},
+        arms=[
+            ArmReport(arm="left_arm", age_seconds=0.2, live=True),
+            ArmReport(arm="right_arm"),
+        ],
+        mirrored=True,
+    )
+    assert RobotPosture.from_json(posture.to_json()) == posture
+    assert {ArmReportKey, RobotPostureKey} <= set(BROWSER_ENUMERATIONS)
+
+
+def test_an_arm_that_never_reported_reads_as_not_live():
+    arm = ArmReport.from_json({ArmReportKey.ARM: "left_arm"})
+    assert arm.age_seconds is None
+    assert not arm.live
+
+
+def test_a_posture_reads_as_not_mirrored_and_without_arms_by_default():
+    posture = RobotPosture.from_json({})
+    assert not posture.mirrored
+    assert posture.arms == []
 
 
 def test_an_idle_status_names_no_mode_and_no_exit():
@@ -449,3 +630,22 @@ def test_a_demo_document_carries_the_plan_and_its_environment(read_json):
 def test_a_demo_on_an_empty_floor_names_no_environment_directory():
     written = DemoDocument(plan=PlanDocument(name="x")).to_json()
     assert DemoDocumentKey.ENVIRONMENT_DIRECTORY not in written
+
+
+def test_a_demo_document_carries_the_profiles_perception_settings():
+    demo = DemoDocument(
+        plan=PlanDocument(name="x"), perception=PerceptionSettings(answer_timeout=5.0)
+    )
+
+    assert DemoDocument.from_json(demo.to_json()) == demo
+
+
+def test_a_demo_document_carries_the_profiles_safety_limits():
+    demo = DemoDocument(
+        plan=PlanDocument(name="x"),
+        safety=SafetyLimits(
+            maximum_tool_velocity=0.5, maximum_real_robot_tool_velocity=0.1
+        ),
+    )
+    assert DemoDocument.from_json(demo.to_json()) == demo
+    assert DemoDocumentKey.SAFETY not in DemoDocument(plan=demo.plan).to_json()

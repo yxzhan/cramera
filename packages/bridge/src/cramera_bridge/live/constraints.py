@@ -32,6 +32,7 @@ from cramph.statechart import Statechart
 from giskardpy.motion_statechart.context import MotionControlContext
 from giskardpy.motion_statechart.graph_node import MotionStatechartNode
 from giskardpy.motion_statechart.monitors.cartesian_monitors import (
+    InFieldOfView,
     PointingAt,
     VectorsAligned,
 )
@@ -41,6 +42,7 @@ from giskardpy.motion_statechart.monitors.feature_monitors import (
 )
 from giskardpy.qp.qp_controller_config import QPControllerConfig
 from krrood_spatial_math.spatial_types import Point3, Vector3
+from semantic_digital_twin.robots.robot_parts import AbstractRobot, Camera
 
 if TYPE_CHECKING:
     from semantic_digital_twin.world import World
@@ -64,6 +66,12 @@ The alignment tolerance the plan view's compiler uses when it names none.
 DEFAULT_POINTING_THRESHOLD = 0.05
 """
 The pointing tolerance in metres the plan view's compiler uses when it names none.
+"""
+
+DEFAULT_FIELD_OF_VIEW_MARGIN = 0.0
+"""
+The angle in radians a body kept in view keeps from the edges of the view when the
+constraint names none.
 """
 
 DEFAULT_LOWER_LIMIT = 0.0
@@ -171,6 +179,14 @@ class ConstraintMonitorFactory:
         root = parameters.body(MonitorParameterKey.ROOT_LINK)
         tip = parameters.body(MonitorParameterKey.TIP_LINK)
         match request.monitor.monitor_type:
+            case ConstraintMonitorType.IN_FIELD_OF_VIEW:
+                return InFieldOfView(
+                    camera=self.camera(),
+                    target=parameters.body(MonitorParameterKey.TARGET),
+                    margin=parameters.number(
+                        MonitorParameterKey.MARGIN, DEFAULT_FIELD_OF_VIEW_MARGIN
+                    ),
+                )
             case ConstraintMonitorType.VECTORS_ALIGNED:
                 return VectorsAligned(
                     root_link=root,
@@ -222,6 +238,18 @@ class ConstraintMonitorFactory:
                 MonitorParameterKey.UPPER_LIMIT, DEFAULT_UPPER_LIMIT
             ),
         )
+
+    def camera(self) -> Camera:
+        """
+        :return: The default camera of the live world's first robot.
+        :raises InvalidConstraint: When the world holds no robot.
+        """
+        robots = self.world.get_semantic_annotations_by_type(AbstractRobot)
+        if not robots:
+            raise InvalidConstraint(
+                MonitorParameterKey.TARGET, "a body a robot's camera looks at"
+            )
+        return robots[0].get_default_camera()
 
     @staticmethod
     def goal_point(parameters: MonitorParameters, root: Body) -> Point3:

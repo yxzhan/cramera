@@ -9,6 +9,7 @@ import {
   ConstraintRequestKey,
   LiveObjectKey,
   LivePlanKey,
+  LiveParameter,
   LivePlanNodeKey,
   LiveRoute,
   MonitorSpecificationKey,
@@ -93,6 +94,14 @@ export class LiveClient {
    */
   plan() {
     return this.#client.get(this.url(LiveRoute.PLAN));
+  }
+
+  /**
+   * @param {string} key The key of an image a perception step took.
+   * @returns {string} The image's URL.
+   */
+  perceptionImageUrl(key) {
+    return `${this.url(LiveRoute.PERCEPTION_IMAGE)}?${LiveParameter.KEY}=${encodeURIComponent(key)}`;
   }
 
   /**

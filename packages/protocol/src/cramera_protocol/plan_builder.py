@@ -10,32 +10,51 @@ The generated demo builds the world and the native actions from it.
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from types import MappingProxyType
 
 from typing_extensions import Any, Dict, List, Optional, Self
 
-from cramera_protocol.bundle.index import SceneIndexEntry
+from cramera_protocol.bundle.index import SceneIndexEntry, SceneName
 from cramera_protocol.document import JsonDocument, ValueLocation, document_field
-from cramera_protocol.geometry import Pose
+from cramera_protocol.geometry import Bounds, Pose, Vector3
 from cramera_protocol.live_messages import (
     ConstraintMonitorType,
     MonitorSpecification,
     SurfaceDescription,
 )
+from cramera_protocol.robot_profile import (
+    CameraMount,
+    ExecutorKind,
+    PerceptionSettings,
+    RobotProfile,
+    SafetyLimits,
+    Zone,
+)
 from cramera_protocol.version import CURRENT_VERSION, ProtocolVersion
 
-PLAN_FORMAT_VERSION = ProtocolVersion(major=1, minor=3)
+PLAN_FORMAT_VERSION = ProtocolVersion(major=1, minor=4)
 """
 The version plans are written with: steps name an action, its fields, enumeration
-members and surface types, and robots a model, by the protocol's identifiers.
+members and surface types, and robots a model, by the protocol's identifiers; a step
+may name the robot profile's skill it was made from, and the plan the platform version
+it was saved with.
 
 Plans of an earlier version are migrated when they are read: those before
 :data:`CLASS_NAME_FORMAT_VERSION` name a step kind, which becomes an action; those of
 that version name the planner's classes, and those of
 :data:`ACTION_IDENTIFIER_FORMAT_VERSION` its member and annotation names, which
-:class:`SavedNames` translates.
+:class:`SavedNames` translates; those of :data:`IDENTIFIER_FORMAT_VERSION` only take
+the current version.
+"""
+
+IDENTIFIER_FORMAT_VERSION = ProtocolVersion(major=1, minor=3)
+"""
+The version whose plans name everything by the protocol's identifiers but neither a
+step's skill nor the platform version.
 """
 
 ACTION_IDENTIFIER_FORMAT_VERSION = ProtocolVersion(major=1, minor=2)
@@ -129,6 +148,30 @@ class PlanBuilderRoute(StrEnum):
     Stops the demo process.
     """
 
+    RUN_ACKNOWLEDGE = "run/acknowledge"
+    """
+    Acknowledges the safety stop of the demo started last, after which a demo may start
+    again.
+    """
+
+    SCAN = "scan"
+    """
+    Looks for the objects in a region of the scene; a posted scan request answers with
+    the plan's objects after the scan.
+    """
+
+    VALIDATE = "validate"
+    """
+    Tries every step of a posted plan in a copy of the twin without moving anything; a
+    posted validation request answers with the validation's report.
+    """
+
+    REACH = "reach"
+    """
+    What a robot model reaches and the table it works at; a posted reach request answers
+    with the robot's reach.
+    """
+
     OBJECT_FILES = "objects/"
     """
     The prefix of the object models' files: ``objects/<file>``.
@@ -155,6 +198,12 @@ class PlanBuilderRoute(StrEnum):
     """
     Lists a folder of this machine: its folders and its URDF and xacro files; the
     :class:`UrdfFolderParameter` values name the folder.
+    """
+
+    POSTURE = "posture"
+    """
+    The joint positions the real robot's drivers report last, mirrored while the
+    builder is attached to the real robot.
     """
 
 
@@ -210,6 +259,23 @@ class PlacementMode(StrEnum):
     runs.
     """
 
+    ZONE = "zone"
+    """
+    Into a named zone of the robot profile, at the free spot within reach nearest its
+    centre, found when the plan is grounded.
+    """
+
+    ON_TOP_OF = "on_top_of"
+    """
+    On top of another object, wherever that object stands when the plan is grounded.
+    """
+
+    MARKER = "marker"
+    """
+    At a marker dragged across the scene: its position and heading, resting on the
+    surface the marker snapped to.
+    """
+
 
 class DestinationKey(StrEnum):
     """
@@ -236,6 +302,16 @@ class DestinationKey(StrEnum):
     The surface.
     """
 
+    ZONE = "zone"
+    """
+    The named zone.
+    """
+
+    OBJECT = "object"
+    """
+    The object the step puts its object on top of.
+    """
+
 
 @dataclass(kw_only=True)
 class Destination(JsonDocument):
@@ -253,7 +329,8 @@ class Destination(JsonDocument):
 
     pose: Optional[Pose] = document_field(DestinationKey.POSE, default=None)
     """
-    The pose in world coordinates the object is put down at.
+    The pose in world coordinates the object is put down at; at a marker, the marker's
+    pose, resting on the surface below it.
     """
 
     surface_type: Optional[str] = document_field(
@@ -269,6 +346,29 @@ class Destination(JsonDocument):
     """
     The name of one surface annotation, or None for any surface of the type.
     """
+
+    zone: Optional[str] = document_field(DestinationKey.ZONE, default=None)
+    """
+    The identifier of the robot profile's zone the object is put into.
+    """
+
+    object: Optional[str] = document_field(DestinationKey.OBJECT, default=None)
+    """
+    The identity of the object, or the reference to the object a detection finds, that
+    the step puts its object on top of.
+    """
+
+    @property
+    def is_grounded_late(self) -> bool:
+        """
+        Whether the pose the object goes to is only known once the plan is grounded: in
+        a zone, on top of an object or at a marker.
+        """
+        return self.placement in (
+            PlacementMode.ZONE,
+            PlacementMode.ON_TOP_OF,
+            PlacementMode.MARKER,
+        )
 
 
 # %% constraints
@@ -625,6 +725,11 @@ class ConstraintRuleKey(StrEnum):
     The boolean field of the step's action the constraint turns on.
     """
 
+    CAMERA_MOUNT = "cameraMount"
+    """
+    The camera mount of the robots the rule is offered to.
+    """
+
 
 @dataclass(kw_only=True)
 class ConstraintRule(JsonDocument):
@@ -684,6 +789,27 @@ class ConstraintRule(JsonDocument):
     The name of the boolean field the constraint turns on; it applies to a step whose
     action has a boolean field of that name.
     """
+
+    camera_mount: Optional[CameraMount] = document_field(
+        ConstraintRuleKey.CAMERA_MOUNT, default=None
+    )
+    """
+    The camera mount of the robots the rule is offered to; None offers it to every
+    robot.
+    """
+
+    def is_offered_to(self, camera_mount: Optional[CameraMount]) -> bool:
+        """
+        :param camera_mount: How a robot's camera is mounted, None when it is unknown.
+        :return: Whether the rule is offered to that robot: a rule naming no mount to
+            every robot, one naming a mount to a robot of that mount or of an unknown
+            one.
+        """
+        return (
+            self.camera_mount is None
+            or camera_mount is None
+            or self.camera_mount is camera_mount
+        )
 
 
 class ConstraintRuleBookKey(StrEnum):
@@ -747,6 +873,11 @@ class PlanStepKey(StrEnum):
     The step's identity within the plan.
     """
 
+    SKILL = "skill"
+    """
+    The robot profile's skill the step was added as.
+    """
+
     ACTION = "action"
     """
     The native action the step is.
@@ -779,6 +910,13 @@ class PlanStep(JsonDocument):
     action: str = document_field(PlanStepKey.ACTION)
     """
     The native action's identifier, as the catalog's action schemas name it.
+    """
+
+    skill: Optional[str] = document_field(PlanStepKey.SKILL, default=None)
+    """
+    The stable identifier of the robot profile's skill the step was added as, which
+    names its action again when the profile maps the skill to another one; None for a
+    step added as a native action.
     """
 
     values: Dict[str, Any] = document_field(PlanStepKey.VALUES, default_factory=dict)
@@ -1237,6 +1375,11 @@ class PlanKey(StrEnum):
     The format version the plan is written in.
     """
 
+    PLATFORM_VERSION = "platformVersion"
+    """
+    The version of the platform the plan was saved with.
+    """
+
     NAME = "name"
     """
     The plan's name.
@@ -1268,6 +1411,44 @@ class PlanKey(StrEnum):
     """
 
 
+PLAN_NAME_CHARACTERS = re.compile(r"[A-Za-z0-9_-]+(?: +[A-Za-z0-9_-]+)*")
+"""
+A plan's name: words of letters, digits, ``_`` or ``-``, separated by spaces.
+"""
+
+FILE_NAME_SPACE = "_"
+"""
+What a space of a plan's name becomes in the names of its demo and recording.
+"""
+
+
+@dataclass(frozen=True)
+class PlanName:
+    """
+    A plan's name as a person gives it, and the file name its demo and recording take.
+    """
+
+    text: str
+    """
+    The name.
+    """
+
+    def is_valid(self) -> bool:
+        """
+        :return: Whether it is words of letters, digits, ``_`` or ``-`` separated by
+            spaces, whose file name is a scene name.
+        """
+        return PLAN_NAME_CHARACTERS.fullmatch(
+            self.text
+        ) is not None and SceneName.is_valid(self.file_name())
+
+    def file_name(self) -> str:
+        """
+        :return: The name with each space as :data:`FILE_NAME_SPACE`.
+        """
+        return self.text.replace(" ", FILE_NAME_SPACE)
+
+
 @dataclass(kw_only=True)
 class PlanDocument(JsonDocument):
     """
@@ -1277,7 +1458,8 @@ class PlanDocument(JsonDocument):
 
     name: str = document_field(PlanKey.NAME)
     """
-    The plan's name; the generated demo's file and recording are named after it.
+    The plan's name; the generated demo's file and recording are named after its
+    :meth:`PlanName.file_name`.
     """
 
     format_version: ProtocolVersion = document_field(
@@ -1316,8 +1498,34 @@ class PlanDocument(JsonDocument):
     The free objects, in the order they were added.
     """
 
+    platform_version: Optional[str] = document_field(
+        PlanKey.PLATFORM_VERSION, default=None
+    )
+    """
+    The version of the platform whose robot profile the plan was last saved with, for
+    migrating it when a later platform maps its skills differently; None for a plan
+    saved without a profile.
+    """
+
     def __post_init__(self) -> None:
         self.format_version.require_readable_by(CURRENT_VERSION)
+
+    def file_name(self) -> str:
+        """
+        :return: The name the plan's demo file and recording take, see
+            :meth:`PlanName.file_name`.
+        """
+        return PlanName(self.name).file_name()
+
+    def performing_robot(self) -> Optional[PlannedRobot]:
+        """
+        :return: The robot whose steps run: the selected one, else the first; None for
+            a plan without robots.
+        """
+        for robot in self.robots:
+            if robot.identifier == self.selected_robot:
+                return robot
+        return self.robots[0] if self.robots else None
 
     @classmethod
     def read_at(cls, data: Any, location: ValueLocation) -> Self:
@@ -1624,6 +1832,12 @@ class ActionFieldKind(StrEnum):
     GRASP = "grasp"
     """
     A grasp, never entered: the demo derives it from the action's arm and object.
+    """
+
+    REGION = "region"
+    """
+    A region of the scene objects are looked for in, a
+    :class:`~cramera_protocol.detection.DetectionRegion`.
     """
 
 
@@ -2147,6 +2361,39 @@ class ObjectModel(JsonDocument):
     """
 
 
+class PlanTemplateKey(StrEnum):
+    """
+    The keys of a plan template.
+    """
+
+    IDENTIFIER = "id"
+    """
+    The template's identity within its robot profile.
+    """
+
+    PLAN = "plan"
+    """
+    The plan a new plan copies.
+    """
+
+
+@dataclass(kw_only=True)
+class PlanTemplate(JsonDocument):
+    """
+    A plan a robot profile offers to start from, whose values a person then adjusts.
+    """
+
+    identifier: str = document_field(PlanTemplateKey.IDENTIFIER)
+    """
+    The template's identity within its robot profile.
+    """
+
+    plan: PlanDocument = document_field(PlanTemplateKey.PLAN)
+    """
+    The plan a new plan copies; its name is the template's name.
+    """
+
+
 class PlanBuilderCatalogKey(StrEnum):
     """
     The keys of the plan builder's catalog.
@@ -2210,6 +2457,16 @@ class PlanBuilderCatalogKey(StrEnum):
     MISSING = "missing"
     """
     The CRAM modules that cannot be found.
+    """
+
+    PROFILE = "profile"
+    """
+    The robot profile the deployment configured.
+    """
+
+    TEMPLATES = "templates"
+    """
+    The plans the robot profile offers to start from.
     """
 
 
@@ -2305,6 +2562,20 @@ class PlanBuilderCatalog(JsonDocument):
     empty while one is missing.
     """
 
+    profile: Optional[RobotProfile] = document_field(
+        PlanBuilderCatalogKey.PROFILE, default=None
+    )
+    """
+    The robot profile new plans start from, or None when the deployment configured none.
+    """
+
+    templates: List[PlanTemplate] = document_field(
+        PlanBuilderCatalogKey.TEMPLATES, default_factory=list
+    )
+    """
+    The plans the robot profile offers to start from, in the profile's order.
+    """
+
 
 # %% demos
 
@@ -2322,6 +2593,21 @@ class DemoDocumentKey(StrEnum):
     ENVIRONMENT_DIRECTORY = "environmentDirectory"
     """
     The environment bundle's directory.
+    """
+
+    ZONES = "zones"
+    """
+    The named zones of the robot profile.
+    """
+
+    SAFETY = "safety"
+    """
+    The safety limits of the robot profile.
+    """
+
+    PERCEPTION = "perception"
+    """
+    How the robot profile's perception is asked.
     """
 
 
@@ -2342,6 +2628,25 @@ class DemoDocument(JsonDocument):
     )
     """
     The absolute path of the plan's environment bundle, or None for an empty floor.
+    """
+
+    zones: List[Zone] = document_field(DemoDocumentKey.ZONES, default_factory=list)
+    """
+    The robot profile's named zones the plan's steps may name.
+    """
+
+    safety: Optional[SafetyLimits] = document_field(
+        DemoDocumentKey.SAFETY, default=None
+    )
+    """
+    The robot profile's safety limits every motion of the run is held to, or None.
+    """
+
+    perception: PerceptionSettings = document_field(
+        DemoDocumentKey.PERCEPTION, default_factory=PerceptionSettings
+    )
+    """
+    How the robot profile's perception is asked.
     """
 
 
@@ -2365,6 +2670,12 @@ class DemoOption(StrEnum):
     """
     End when standard input closes, which happens when the process that started the demo
     ends.
+    """
+
+    EXECUTOR = "--executor"
+    """
+    How the plan's motions are executed, an :class:`ExecutorKind` value; kinematically
+    when it is left out.
     """
 
 
@@ -2453,6 +2764,77 @@ class RunMode(StrEnum):
     Performs the selected robot's plan, records it and saves the recording.
     """
 
+    SIMULATE = "simulate"
+    """
+    Performs the selected robot's plan in a physics simulation, records it and saves the
+    recording.
+    """
+
+    ROBOT = "robot"
+    """
+    Performs the selected robot's plan on the real robot, once the plan passed its
+    validation; it has no executor unless the robot profile names one.
+    """
+
+    @property
+    def default_executor(self) -> Optional[ExecutorKind]:
+        """
+        How a run of this mode executes unless the robot profile says otherwise; None
+        for a mode that performs nothing and for one only a profile can execute.
+        """
+        return DEFAULT_EXECUTORS.get(self)
+
+    @property
+    def performs_plan(self) -> bool:
+        """
+        Whether a run of this mode performs the plan, rather than only staging its
+        world.
+        """
+        return self is not RunMode.STAGE
+
+    @property
+    def needs_validation(self) -> bool:
+        """
+        Whether a run of this mode starts only for a plan that passed its validation.
+        """
+        return self is RunMode.ROBOT
+
+
+DEFAULT_EXECUTORS = MappingProxyType(
+    {RunMode.PERFORM: ExecutorKind.KINEMATIC, RunMode.SIMULATE: ExecutorKind.PHYSICS}
+)
+"""
+How each run mode that performs the plan executes it unless a robot profile names
+another executor.
+"""
+
+
+class ArmHaltLine(StrEnum):
+    """
+    The lines the plan builder's halt of the real robot's arms prints: that it is
+    ready, and, once the plan builder closed its input after the stopped run and its
+    Giskard ended, whether it commanded every arm zero velocities and every arm then
+    reported standing still.
+    """
+
+    READY = "arm halt ready"
+    """
+    Printed once the halt reaches the controllers' command topics.
+    """
+
+    HALTED = (
+        "arms halted: zero velocities commanded, every joint reports standing still"
+    )
+    """
+    Printed once every arm was commanded zero velocities and reported standing still.
+    """
+
+    NOT_HALTED = "arms NOT confirmed halted"
+    """
+    Printed when an arm's controller was not found, or an arm did not report standing
+    still in time.
+    """
+
 
 class RunState(StrEnum):
     """
@@ -2469,6 +2851,12 @@ class RunState(StrEnum):
     The demo runs.
     """
 
+    SAVING = "saving"
+    """
+    The demo's run is over and its robot released; the demo still saves the run's
+    record.
+    """
+
     FINISHED = "finished"
     """
     The demo ended on its own with success.
@@ -2479,9 +2867,33 @@ class RunState(StrEnum):
     The demo ended on its own with an error.
     """
 
+    SAVE_FAILED = "save_failed"
+    """
+    The demo's run was over and its robot released, but saving the run's record failed.
+    """
+
     STOPPED = "stopped"
     """
-    The demo was stopped.
+    The demo was stopped; a run on the real robot only once its Giskard ended, both
+    arms were commanded zero velocities and reported standing still.
+    """
+
+    HALT_UNCONFIRMED = "halt_unconfirmed"
+    """
+    A run on the real robot was stopped, but the plan builder could not confirm in time
+    that its Giskard ended, both arms were commanded zero velocities and reported
+    standing still; the robot may still move.
+    """
+
+    SAFETY_STOPPED = "safety_stopped"
+    """
+    The demo was cancelled because a motion broke a safety limit; nothing resumes it.
+    """
+
+    REFUSED = "refused"
+    """
+    A run on the real robot ended before anything moved, as its check of the robot
+    found something missing; the plan keeps its validation.
     """
 
 
@@ -2500,6 +2912,11 @@ class RunRequestKey(StrEnum):
     What the demo does.
     """
 
+    OVERRIDE_VALIDATION = "overrideValidation"
+    """
+    Whether the run starts without the plan's passed validation.
+    """
+
 
 @dataclass(kw_only=True)
 class RunRequest(JsonDocument):
@@ -2515,6 +2932,727 @@ class RunRequest(JsonDocument):
     mode: RunMode = document_field(RunRequestKey.MODE, default=RunMode.STAGE)
     """
     What the demo does.
+    """
+
+    override_validation: bool = document_field(
+        RunRequestKey.OVERRIDE_VALIDATION, default=False
+    )
+    """
+    Whether a run of a mode needing a passed validation starts without one, as developer
+    mode allows.
+    """
+
+
+class RunOutputMarker(StrEnum):
+    """
+    What a line of a demo's output starts with when it tells the plan builder something.
+    """
+
+    SAFETY_STOP = "[safety stop]"
+    """
+    A motion broke a safety limit, which the rest of the line names.
+    """
+
+    RUN_EVENT = "[run event]"
+    """
+    Something happened while the plan ran, which the rest of the line holds as the JSON
+    of a :class:`RunEvent`.
+    """
+
+
+# %% run events
+
+
+class StepState(StrEnum):
+    """
+    Where a step of a running plan stands.
+    """
+
+    PENDING = "pending"
+    """
+    The step has not started yet.
+    """
+
+    RUNNING = "running"
+    """
+    An attempt at the step runs.
+    """
+
+    RETRYING = "retrying"
+    """
+    An attempt at the step failed and the step is attempted again.
+    """
+
+    DONE = "done"
+    """
+    The step succeeded.
+    """
+
+    FAILED = "failed"
+    """
+    The step failed for good: it used up its attempts or a safety limit stopped it.
+    """
+
+
+class RunEventKind(StrEnum):
+    """
+    What a run event tells.
+    """
+
+    STEP = "step"
+    """
+    A step changed its state.
+    """
+
+    MONITOR = "monitor"
+    """
+    What a monitor observes changed.
+    """
+
+    PERCEIVED = "perceived"
+    """
+    A step perceived an object, and the color it shows.
+    """
+
+    SAFETY_STOP = "safetyStop"
+    """
+    A motion broke a safety limit, and the run ends.
+    """
+
+    RECORD_SAVING = "recordSaving"
+    """
+    The run is over and its robot released; the run's record is being saved.
+    """
+
+    REGROUNDED = "regrounded"
+    """
+    An object a step expects in place was found elsewhere before the step moved
+    anything, and the step and the ones after it were grounded anew where it lies.
+    """
+
+    CONTINUED_UNSEEN = "continuedUnseen"
+    """
+    An object a step expects in place was not seen, or the robot's perception did not
+    answer, before the step moved anything, and the step acts where the plan was
+    grounded with the object, as a lenient runtime check allows; :attr:`RunEvent.reason`
+    says what was not seen or did not answer.
+    """
+
+    REFUSED = "refused"
+    """
+    The check of the real robot before the run found something missing, so the run
+    ends before it started Giskard or commanded anything; :attr:`RunEvent.reason` says
+    what is missing and what to do.
+    """
+
+    PERCEPTION = "perception"
+    """
+    A perception query of a step was answered, or went unanswered;
+    :attr:`RunEvent.perception` says what was asked, what came back and which object
+    the step took.
+    """
+
+
+class RunMonitor(StrEnum):
+    """
+    A monitor of a run whose observations the run reports.
+    """
+
+    LOOK_AT = "lookAt"
+    """
+    Whether the robot's camera keeps a step's object in view.
+    """
+
+    SAFETY = "safety"
+    """
+    Whether every motion keeps to the robot profile's safety limits.
+    """
+
+
+class MonitorObservation(StrEnum):
+    """
+    What a run's monitor observes.
+    """
+
+    HOLDS = "holds"
+    """
+    What the monitor watches holds: the object is in view, the limits are kept.
+    """
+
+    VIOLATED = "violated"
+    """
+    What the monitor watches is violated.
+    """
+
+
+class RunEventKey(StrEnum):
+    """
+    The keys of a run event.
+    """
+
+    KIND = "kind"
+    """
+    What the event tells.
+    """
+
+    STEP = "step"
+    """
+    The identity of the step it concerns.
+    """
+
+    STATE = "state"
+    """
+    The state the step changed to.
+    """
+
+    ATTEMPT = "attempt"
+    """
+    Which attempt at the step, counting from 1.
+    """
+
+    ATTEMPTS = "attempts"
+    """
+    How many attempts the step has at most.
+    """
+
+    ARM = "arm"
+    """
+    The arm the attempt uses.
+    """
+
+    REASON = "reason"
+    """
+    Why the attempt failed.
+    """
+
+    NEXT_ATTEMPT = "nextAttempt"
+    """
+    How the next attempt differs.
+    """
+
+    MONITOR = "monitor"
+    """
+    The monitor whose observation changed.
+    """
+
+    OBSERVATION = "observation"
+    """
+    What the monitor observes now.
+    """
+
+    TARGET = "target"
+    """
+    The object the event concerns.
+    """
+
+    COLOR = "color"
+    """
+    The color a perceived object shows.
+    """
+
+    CONSTRAINT = "constraint"
+    """
+    The broken safety limit.
+    """
+
+    PERCEPTION = "perception"
+    """
+    What a perception query asked and what came back.
+    """
+
+
+# %% perception reports
+
+
+class ReportedObjectVerdict(StrEnum):
+    """
+    Whether a step took an object its perception reported, and why not.
+    """
+
+    ACCEPTED = "accepted"
+    """
+    The step took it, close enough to where the plan expects it.
+    """
+
+    TOO_FAR = "tooFar"
+    """
+    The step took it, but it lies farther from where the step expected it than the
+    step allows, so the step stops before moving.
+    """
+
+    NOT_CHOSEN = "notChosen"
+    """
+    It would do, but the step took another object reported before it.
+    """
+
+    WRONG_COLOR = "wrongColor"
+    """
+    It shows none of the colors asked for.
+    """
+
+    WRONG_TYPE = "wrongType"
+    """
+    It is of another type than the one asked for.
+    """
+
+    OUTSIDE_BOX = "outsideBox"
+    """
+    It lies outside the box the step looked in.
+    """
+
+
+class SurfaceDepthKey(StrEnum):
+    """
+    The keys of how far a reported object lay inside the surface it stands on.
+    """
+
+    SURFACE = "surface"
+    """
+    The surface it stands on.
+    """
+
+    DEPTH = "depth"
+    """
+    How far it lay inside it.
+    """
+
+
+@dataclass(kw_only=True)
+class SurfaceDepth(JsonDocument):
+    """
+    How far a perception put the object looked for inside the supporting surface it
+    stands on, such as a cube a few millimetres inside the table, which the object is
+    raised by to rest on the surface.
+    """
+
+    surface: str = document_field(SurfaceDepthKey.SURFACE)
+    """
+    The name of the surface, such as the table.
+    """
+
+    depth: float = document_field(SurfaceDepthKey.DEPTH)
+    """
+    How far, in metres, the object's lowest point lay below the surface's top.
+    """
+
+
+class ReportedObjectKey(StrEnum):
+    """
+    The keys of an object a perception query reported.
+    """
+
+    POSITION = "position"
+    """
+    Where it was seen.
+    """
+
+    SIZE = "size"
+    """
+    The extent of the box around it.
+    """
+
+    COLORS = "colors"
+    """
+    The colors it was seen in.
+    """
+
+    TYPE = "type"
+    """
+    The type it was reported as.
+    """
+
+    VERDICT = "verdict"
+    """
+    Whether the step took it, and why not.
+    """
+
+    DISTANCE = "distance"
+    """
+    How far it lies from where the step expected the object.
+    """
+
+    INSIDE_SURFACE = "insideSurface"
+    """
+    How far it lay inside the surface it stands on.
+    """
+
+
+@dataclass(kw_only=True)
+class ReportedObject(JsonDocument):
+    """
+    One object a perception query reported, and whether the step took it.
+    """
+
+    position: Vector3 = document_field(ReportedObjectKey.POSITION)
+    """
+    Where it was seen, in metres in the world's root.
+    """
+
+    size: Optional[Vector3] = document_field(ReportedObjectKey.SIZE, default=None)
+    """
+    The extent of the box around it in metres, None when none was measured.
+    """
+
+    colors: List[str] = document_field(ReportedObjectKey.COLORS, default_factory=list)
+    """
+    The colors it was seen in, most dominant first, as the perception names them.
+    """
+
+    type: str = document_field(ReportedObjectKey.TYPE, default="")
+    """
+    The type it was reported as, empty for an object the perception did not classify.
+    """
+
+    verdict: ReportedObjectVerdict = document_field(ReportedObjectKey.VERDICT)
+    """
+    Whether the step took it, and why not.
+    """
+
+    distance: Optional[float] = document_field(
+        ReportedObjectKey.DISTANCE, default=None
+    )
+    """
+    How far it lies, horizontally, from where the step expected the object, see
+    :attr:`PerceptionReport.grounded`, in metres; None for a query without such a
+    position.
+    """
+
+    inside_surface: Optional[SurfaceDepth] = document_field(
+        ReportedObjectKey.INSIDE_SURFACE, default=None
+    )
+    """
+    How far it lay inside the surface it stands on, had it been the plan's object
+    looked for; None when it lay inside none, or the query looks for none of the plan's
+    objects.
+    """
+
+
+class PerceptionReportKey(StrEnum):
+    """
+    The keys of a perception report.
+    """
+
+    TARGET = "target"
+    """
+    The plan's object looked for.
+    """
+
+    LOOKED_FOR = "lookedFor"
+    """
+    The object looked for as a person names it.
+    """
+
+    TYPE = "type"
+    """
+    The type asked for.
+    """
+
+    COLOR = "color"
+    """
+    The color asked for.
+    """
+
+    BOX = "box"
+    """
+    The box looked in.
+    """
+
+    TABLE_WIDE = "tableWide"
+    """
+    Whether the box is the whole table.
+    """
+
+    GROUNDED = "grounded"
+    """
+    Where the step expected the object before the query, which distances are
+    measured from.
+    """
+
+    VALIDATED = "validated"
+    """
+    Where the plan was validated with the object, when the step expected it elsewhere.
+    """
+
+    TOLERANCE = "tolerance"
+    """
+    How far from there the object may lie.
+    """
+
+    ANSWERED = "answered"
+    """
+    Whether the perception answered.
+    """
+
+    OBJECTS = "objects"
+    """
+    The objects reported.
+    """
+
+    SUMMARY = "summary"
+    """
+    The report as a person reads it.
+    """
+
+
+@dataclass(kw_only=True)
+class PerceptionReport(JsonDocument):
+    """
+    One perception query of a step: what was asked, every object that came back, which
+    one the step took and why the others not, and the outcome in one sentence.
+    """
+
+    target: Optional[str] = document_field(PerceptionReportKey.TARGET, default=None)
+    """
+    The identity of the plan's object looked for, None when the query names none.
+    """
+
+    looked_for: str = document_field(PerceptionReportKey.LOOKED_FOR, default="")
+    """
+    The object looked for as a person names it, such as "the red cube" or "a red
+    object"; :attr:`type` is what the perception checks.
+    """
+
+    type: str = document_field(PerceptionReportKey.TYPE)
+    """
+    The type asked for, as the perception names it.
+    """
+
+    color: Optional[str] = document_field(PerceptionReportKey.COLOR, default=None)
+    """
+    The color asked for, None for any.
+    """
+
+    box: Bounds = document_field(PerceptionReportKey.BOX)
+    """
+    The box looked in, in metres in the world's root.
+    """
+
+    table_wide: bool = document_field(PerceptionReportKey.TABLE_WIDE, default=False)
+    """
+    Whether the box is the whole table rather than one around where the plan was
+    validated.
+    """
+
+    grounded: Optional[Vector3] = document_field(
+        PerceptionReportKey.GROUNDED, default=None
+    )
+    """
+    Where the step expected the object just before the query, which the distances are
+    measured from: where the plan was validated, or, when the step was planned again
+    since, where the object was last seen; None when the step expects it nowhere in
+    particular.
+    """
+
+    validated: Optional[Vector3] = document_field(
+        PerceptionReportKey.VALIDATED, default=None
+    )
+    """
+    Where the plan was validated with the object, when the step was planned again since
+    with the object expected elsewhere, at :attr:`grounded`; None otherwise.
+    """
+
+    tolerance: Optional[float] = document_field(
+        PerceptionReportKey.TOLERANCE, default=None
+    )
+    """
+    How far, in metres, from :attr:`grounded` the object may lie for the step to go on.
+    """
+
+    answered: bool = document_field(PerceptionReportKey.ANSWERED, default=True)
+    """
+    Whether the perception answered; an unanswered query reports no objects.
+    """
+
+    objects: List[ReportedObject] = document_field(
+        PerceptionReportKey.OBJECTS, default_factory=list
+    )
+    """
+    Every object the perception reported, in the order it reported them.
+    """
+
+    summary: str = document_field(PerceptionReportKey.SUMMARY, default="")
+    """
+    The outcome as a person reads it, such as "The red cube was seen 19 cm from where
+    the plan was validated, outside the 15 cm box looked in."
+    """
+
+
+@dataclass(kw_only=True)
+class RunEvent(JsonDocument):
+    """
+    One thing that happened while a plan ran, as the run view follows it: a step changed
+    its state, a monitor its observation, a step perceived an object, a safety limit
+    stopped the run, or the run ended and its record is being saved.
+
+    The fields beside :attr:`kind` that do not concern it are None.
+    """
+
+    kind: RunEventKind = document_field(RunEventKey.KIND)
+    """
+    What the event tells.
+    """
+
+    step: Optional[str] = document_field(RunEventKey.STEP, default=None)
+    """
+    The identity of the step it concerns, None for the whole run.
+    """
+
+    state: Optional[StepState] = document_field(RunEventKey.STATE, default=None)
+    """
+    For a step event: the state the step changed to.
+    """
+
+    attempt: Optional[int] = document_field(RunEventKey.ATTEMPT, default=None)
+    """
+    For a step event: which attempt at the step, counting from 1.
+    """
+
+    attempts: Optional[int] = document_field(RunEventKey.ATTEMPTS, default=None)
+    """
+    For a step event: how many attempts the step has at most.
+    """
+
+    arm: Optional[str] = document_field(RunEventKey.ARM, default=None)
+    """
+    For a step event: the arm the step uses, by the protocol's identifier, None when its
+    grounding chose none.
+    """
+
+    reason: Optional[str] = document_field(RunEventKey.REASON, default=None)
+    """
+    For a step that is retried or failed, or a refused run: why, as a person reads it.
+    """
+
+    next_attempt: Optional[str] = document_field(RunEventKey.NEXT_ATTEMPT, default=None)
+    """
+    For a step that is retried: how the next attempt differs, as a person reads it.
+    """
+
+    monitor: Optional[RunMonitor] = document_field(RunEventKey.MONITOR, default=None)
+    """
+    For a monitor event: the monitor.
+    """
+
+    observation: Optional[MonitorObservation] = document_field(
+        RunEventKey.OBSERVATION, default=None
+    )
+    """
+    For a monitor event: what the monitor observes now.
+    """
+
+    target: Optional[str] = document_field(RunEventKey.TARGET, default=None)
+    """
+    The identity of the object a look-at keeps in view or a step perceived.
+    """
+
+    color: Optional[str] = document_field(RunEventKey.COLOR, default=None)
+    """
+    For a perceived object: the color it shows, by the protocol's identifier.
+    """
+
+    constraint: Optional[str] = document_field(RunEventKey.CONSTRAINT, default=None)
+    """
+    For a safety stop: the broken safety limit and how it was broken.
+    """
+
+    perception: Optional[PerceptionReport] = document_field(
+        RunEventKey.PERCEPTION, default=None
+    )
+    """
+    For a perception event: what the query asked and what came back.
+    """
+
+    def to_output_line(self) -> str:
+        """
+        :return: The line of a demo's output reporting the event.
+        """
+        return f"{RunOutputMarker.RUN_EVENT} {json.dumps(self.to_json())}"
+
+    @classmethod
+    def from_output_line(cls, line: str) -> Optional[Self]:
+        """
+        :param line: A line of a demo's output, without its line break.
+        :return: The event it reports, or None for a line reporting none.
+        """
+        if not line.startswith(RunOutputMarker.RUN_EVENT):
+            return None
+        return cls.from_json(
+            json.loads(line.removeprefix(RunOutputMarker.RUN_EVENT).strip())
+        )
+
+
+class SafetyStopKey(StrEnum):
+    """
+    The keys of a safety stop.
+    """
+
+    CONSTRAINT = "constraint"
+    """
+    The broken safety limit.
+    """
+
+    ACKNOWLEDGED = "acknowledged"
+    """
+    Whether a person acknowledged the stop.
+    """
+
+
+@dataclass(kw_only=True)
+class SafetyStop(JsonDocument):
+    """
+    A demo cancelled because a motion broke a safety limit.
+
+    No demo starts until a person acknowledged it, and then only from the plan's
+    beginning.
+    """
+
+    constraint: str = document_field(SafetyStopKey.CONSTRAINT)
+    """
+    The broken safety limit and how it was broken, as a person reads it.
+    """
+
+    acknowledged: bool = document_field(SafetyStopKey.ACKNOWLEDGED, default=False)
+    """
+    Whether a person acknowledged the stop.
+    """
+
+    def to_output_line(self) -> str:
+        """
+        :return: The line of a demo's output reporting the stop.
+        """
+        return f"{RunOutputMarker.SAFETY_STOP} {self.constraint}"
+
+    @classmethod
+    def from_output(cls, output: str) -> Optional[Self]:
+        """
+        :param output: A demo's output.
+        :return: The last stop the output reports, unacknowledged, or None.
+        """
+        reported = [
+            line.removeprefix(RunOutputMarker.SAFETY_STOP).strip()
+            for line in output.splitlines()
+            if line.startswith(RunOutputMarker.SAFETY_STOP)
+        ]
+        if not reported:
+            return None
+        return cls(constraint=reported[-1])
+
+
+class StopAfterMotions(StrEnum):
+    """
+    What a Stop that came once a run's motions were over did: it halted the arms and
+    left the run to save its record and end as it would have.
+    """
+
+    HALTED = "halted"
+    """
+    Every arm was commanded zero velocities and reported standing still.
+    """
+
+    HALT_UNCONFIRMED = "halt_unconfirmed"
+    """
+    The plan builder could not confirm in time that every arm was commanded zero
+    velocities and reported standing still; the robot may still move.
     """
 
 
@@ -2548,6 +3686,26 @@ class RunStatusKey(StrEnum):
     The demo file.
     """
 
+    SAFETY_STOP = "safetyStop"
+    """
+    The safety stop that cancelled the demo.
+    """
+
+    EVENTS = "events"
+    """
+    What happened while the demo ran.
+    """
+
+    STOP_AFTER_MOTIONS = "stopAfterMotions"
+    """
+    What a Stop that came once the run's motions were over did.
+    """
+
+    VALIDATION_HELD = "validationHeld"
+    """
+    Whether the plan builder holds a passed validation a run may start with.
+    """
+
 
 @dataclass(kw_only=True)
 class RunStatus(JsonDocument):
@@ -2579,6 +3737,130 @@ class RunStatus(JsonDocument):
     path: Optional[str] = document_field(RunStatusKey.PATH, default=None)
     """
     The started demo file.
+    """
+
+    safety_stop: Optional[SafetyStop] = document_field(
+        RunStatusKey.SAFETY_STOP, default=None
+    )
+    """
+    The safety stop that cancelled the demo, or None.
+    """
+
+    events: List[RunEvent] = document_field(RunStatusKey.EVENTS, default_factory=list)
+    """
+    Every event the demo reported, in order; its lines are not part of :attr:`log`.
+    """
+
+    stop_after_motions: Optional[StopAfterMotions] = document_field(
+        RunStatusKey.STOP_AFTER_MOTIONS, default=None
+    )
+    """
+    What a Stop did that came once the run's motions were over, which leaves the run's
+    record saving and its state as it would have been; None when no such Stop came.
+    """
+
+    validation_held: Optional[bool] = document_field(
+        RunStatusKey.VALIDATION_HELD, default=None
+    )
+    """
+    Whether the plan builder holds a passed validation a run needing one may start
+    with, which it keeps in memory only, so a restart loses it; None where the status
+    does not say, as the demo process's own does not.
+    """
+
+
+class ArmReportKey(StrEnum):
+    """
+    The keys of when one arm's driver last reported its joint positions.
+    """
+
+    ARM = "arm"
+    """
+    The arm's name.
+    """
+
+    AGE_SECONDS = "ageSeconds"
+    """
+    Seconds since its driver last reported.
+    """
+
+    LIVE = "live"
+    """
+    Whether its driver reported recently enough for the posture to show the arm.
+    """
+
+
+@dataclass(kw_only=True)
+class ArmReport(JsonDocument):
+    """
+    When one arm's driver last reported its joint positions; one arm's driver can stop
+    while the other's goes on.
+    """
+
+    arm: str = document_field(ArmReportKey.ARM)
+    """
+    The arm's name, the namespace its driver publishes its joint states in, such as
+    ``left_arm``.
+    """
+
+    age_seconds: Optional[float] = document_field(
+        ArmReportKey.AGE_SECONDS, default=None
+    )
+    """
+    Seconds since its driver last reported, or None while it never did.
+    """
+
+    live: bool = document_field(ArmReportKey.LIVE, default=False)
+    """
+    Whether its driver reported recently enough that the posture shows where the arm
+    stands; false unless the plan builder found it so.
+    """
+
+
+class RobotPostureKey(StrEnum):
+    """
+    The keys of the posture the real robot's drivers report.
+    """
+
+    JOINT_POSITIONS = "jointPositions"
+    """
+    The position of each joint by its name.
+    """
+
+    ARMS = "arms"
+    """
+    When each arm's driver last reported.
+    """
+
+    MIRRORED = "mirrored"
+    """
+    Whether the plan builder mirrors a real robot's posture.
+    """
+
+
+@dataclass(kw_only=True)
+class RobotPosture(JsonDocument):
+    """
+    The joint positions the real robot's drivers reported last, and how long ago each
+    arm's driver did.
+    """
+
+    joint_positions: Dict[str, float] = document_field(
+        RobotPostureKey.JOINT_POSITIONS, default_factory=dict
+    )
+    """
+    The position of each joint by its name; empty while nothing was reported.
+    """
+
+    arms: List[ArmReport] = document_field(RobotPostureKey.ARMS, default_factory=list)
+    """
+    When each arm's driver last reported; empty while the mirror reported nothing.
+    """
+
+    mirrored: bool = document_field(RobotPostureKey.MIRRORED, default=False)
+    """
+    Whether the plan builder mirrors a real robot's posture; false in simulation, where
+    no driver reports.
     """
 
 
@@ -2652,6 +3934,8 @@ class SavedNames:
         """
         if plan.format_version >= PLAN_FORMAT_VERSION:
             return plan
+        if plan.format_version >= IDENTIFIER_FORMAT_VERSION:
+            return replace(plan, format_version=PLAN_FORMAT_VERSION)
         if plan.format_version < ACTION_IDENTIFIER_FORMAT_VERSION:
             plan = replace(
                 plan,

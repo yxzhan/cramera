@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import ast
 import dataclasses
-import importlib
 import inspect
 import pkgutil
 import re
@@ -42,7 +41,9 @@ from typing_extensions import (
 
 import coraplex.robot_plans.actions
 from coraplex.robot_plans.actions.base import Action
+from cramera.cram_imports import CramImports
 from cramera_bridge.plans.arms import ArmField, Arms
+from cramera_bridge.plans.object_types import ObjectType
 from cramera_bridge.exceptions import UnknownAction
 from cramera_bridge.names import (
     ACTION_NAMES,
@@ -68,6 +69,7 @@ from semantic_digital_twin.grasping.grasp_candidates import GraspCandidate
 from semantic_digital_twin.robots.robot_parts import AbstractRobotPart, EndEffector
 from semantic_digital_twin.semantic_annotations.mixins import HasGraspCandidates
 from krrood_spatial_math.spatial_types import Pose
+from semantic_digital_twin.world_description.geometry import VolumetricBoundingBox
 from semantic_digital_twin.world_description.world_entity import (
     Body,
     SemanticAnnotation,
@@ -222,7 +224,7 @@ class ActionModules:
         :return: The module, or what importing it raised.
         """
         try:
-            return importlib.import_module(name)
+            return CramImports().module(name)
         except Exception as error:
             return FailedActionModule(
                 module=name, error=f"{type(error).__name__}: {error}"
@@ -250,6 +252,14 @@ class FieldKindRule(ABC):
         :param annotation: A resolved field type, without ``None`` in a union.
         :return: The kind of field it is, or None when the rule does not apply.
         """
+
+    def offered_type(self, annotation: Any) -> Any:
+        """
+        :param annotation: A field type the rule applies to.
+        :return: The type a step's value is read as, the field type itself unless the
+            rule offers it as another.
+        """
+        return annotation
 
 
 @dataclass(frozen=True)
@@ -324,8 +334,27 @@ class PlanObjectRule(FieldKindRule):
         return None
 
 
+@dataclass(frozen=True)
+class ObjectTypeRule(FieldKindRule):
+    """
+    A class of annotation to look for, which a step picks among the kinds of the plan's
+    free objects, :class:`ObjectType`.
+    """
+
+    def kind_of(self, annotation: Any) -> Optional[ActionFieldKind]:
+        if get_origin(annotation) is type and get_args(annotation) == (
+            SemanticAnnotation,
+        ):
+            return ActionFieldKind.ENUM
+        return None
+
+    def offered_type(self, annotation: Any) -> Any:
+        return ObjectType
+
+
 FIELD_KIND_RULES: Tuple[FieldKindRule, ...] = (
     SurfaceSampleRule(),
+    ObjectTypeRule(),
     ArmRule(),
     PlanObjectRule(),
     SubclassRule(Enum, ActionFieldKind.ENUM),
@@ -335,6 +364,7 @@ FIELD_KIND_RULES: Tuple[FieldKindRule, ...] = (
         excluded=(AbstractRobotPart,),
     ),
     SubclassRule(Body, ActionFieldKind.BODY),
+    SubclassRule(VolumetricBoundingBox, ActionFieldKind.REGION),
     SubclassRule(Pose, ActionFieldKind.POSE),
     SubclassRule(bool, ActionFieldKind.BOOLEAN),
     SubclassRule(int, ActionFieldKind.INTEGER),
@@ -386,7 +416,8 @@ class ClassifiedType:
 
     python_type: Any
     """
-    The type itself, without ``None`` in a union.
+    The type a step's value is read as: the field type without ``None`` in a union, or
+    the type its rule offers it as.
     """
 
 
@@ -410,7 +441,9 @@ class FieldKinds:
         for rule in self.rules:
             kind = rule.kind_of(annotation)
             if kind is not None:
-                return ClassifiedType(kind=kind, python_type=annotation)
+                return ClassifiedType(
+                    kind=kind, python_type=rule.offered_type(annotation)
+                )
         members = UnionMembers(annotation).present()
         if len(members) == 1 and members[0] is not annotation:
             return self.classify(members[0])
@@ -676,6 +709,14 @@ class DiscoveredAction:
         :return: The action's keyword argument it stands for.
         """
         return self.field_names.get(identifier, identifier)
+
+    def looks_for_objects(self) -> bool:
+        """
+        :return: Whether the action looks for objects in a region it is given.
+        """
+        return any(
+            offered.kind is ActionFieldKind.REGION for offered in self.schema.fields
+        )
 
 
 @dataclass

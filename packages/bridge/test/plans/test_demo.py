@@ -5,6 +5,7 @@ performing it, and staging its world for the viewer.
 
 from __future__ import annotations
 
+import io
 import json
 import math
 import signal
@@ -31,8 +32,10 @@ from cramera_bridge.plans.demo import (
     PlannedTaskDemo,
 )
 from cramera_bridge.plans.steps import StepActions
+from cramera_bridge.plans.run_log import RunLog
 from cramera_bridge.plans.surfaces import SurfaceTargets
 from cramera_bridge.plans.world import PlannedGraspable
+from cramera_bridge.questions.workspace_classes import WorkspaceClassIndex
 from cramera_bridge.exceptions import AnnotationNotInWorld, SurfaceNotInWorld
 from cramera_protocol.bundle.acceptance import AcceptanceMetrics
 from cramera_protocol.bundle.files import BundleFile
@@ -41,10 +44,15 @@ from cramera_protocol.plan_builder import (
     DemoOption,
     PlanDocument,
     PlanStep,
+    RunEvent,
+    RunEventKind,
     StepConstraint,
 )
 from cramera_protocol.viewer import EnvironmentVariable
-from semantic_digital_twin.datastructures.definitions import GripperState
+from semantic_digital_twin.datastructures.definitions import (
+    GripperState,
+    StaticJointState,
+)
 from semantic_digital_twin.grasping.grasp_candidates import GraspCandidate
 from semantic_digital_twin.robots.pr2 import PR2
 from semantic_digital_twin.semantic_annotations.semantic_annotations import Table
@@ -137,6 +145,25 @@ def test_the_objects_start_where_the_plan_puts_them(document, demo, built):
     milk = document.plan.objects[0]
     position = NumericPose.of_entity(world, demo.bodies[milk.identifier]).position
     assert position == pytest.approx(milk.pose.to_json()[:3])
+
+
+def test_every_robot_starts_with_its_arms_parked_clear_of_the_milk(demo, built):
+    world, _ = built
+    for robot in world.get_semantic_annotations_by_type(PR2):
+        for arm in robot.all_arms:
+            parked = arm.get_joint_state_by_type(StaticJointState.PARK)
+            assert [connection.position for connection in parked.connections] == (
+                pytest.approx(list(parked.target_values))
+            )
+    milk = demo.bodies["milk"]
+    detector = world.collision_manager.collision_detector
+    detector.sync_world_model()
+    detector.sync_world_state()
+    assert all(
+        detector.check_collision_between_bodies(body, milk) is None
+        for body in world.bodies_with_collision
+        if body is not milk
+    )
 
 
 @pytest.fixture
@@ -260,6 +287,19 @@ def test_a_plan_on_an_empty_floor_is_recorded_under_its_name(document, demo):
     assert demo.scene_name() == document.plan.name
 
 
+def test_a_plan_named_with_spaces_is_recorded_with_them_as_underscores(document):
+    document.plan.name = "pick and place"
+    demo = PlannedTaskDemo.of_document(document, port=0)
+    assert demo.scene_name() == "pick_and_place"
+
+
+def test_a_plan_named_with_spaces_in_a_bundle_names_the_recording(document, locations):
+    document.plan.name = "pick and place"
+    document.environment_directory = str(PLANS / "lab")
+    demo = PlannedTaskDemo.of_document(document, port=0)
+    assert demo.scene_name() == "lab_pr2_pick_and_place"
+
+
 def test_a_taken_name_gets_the_next_number(demo, locations):
     (locations.local_scenes / demo.name).mkdir(parents=True)
     assert demo.scene_name() == f"{demo.name}_2"
@@ -299,9 +339,40 @@ def test_the_plan_is_performed_and_its_recording_saved(document, locations):
     assert math.isfinite(error) and error <= PLACEMENT_TOLERANCE
 
 
+def test_a_run_whose_robot_was_released_reports_saving_its_record(demo):
+    demo.run_log = RunLog(stream=io.StringIO())
+
+    demo.on_record_saving()
+
+    assert demo.run_log.events() == [RunEvent(kind=RunEventKind.RECORD_SAVING)]
+
+
+def test_a_run_its_robot_refused_reports_why_in_its_log(demo):
+    stream = io.StringIO()
+    demo.run_log = RunLog(stream=stream)
+
+    demo.on_refused("The arm watchdog is not running.")
+
+    assert demo.run_log.events() == [
+        RunEvent(kind=RunEventKind.REFUSED, reason="The arm watchdog is not running.")
+    ]
+    assert "The arm watchdog is not running." in stream.getvalue()
+
+
 def test_a_stopped_stage_restores_the_signal_handlers(demo):
     handlers = {number: signal.getsignal(number) for number in STOP_SIGNALS}
     staged = StagedWorld(demo)
     staged.stopped.set()
     staged.run()
     assert {number: signal.getsignal(number) for number in STOP_SIGNALS} == handlers
+
+
+# %% preparing a run ahead
+
+
+def test_preparing_a_run_ahead_indexes_the_workspace_classes_it_is_published_with():
+    WorkspaceClassIndex.installed.cache_clear()
+
+    PlanDemoCommand.prepare()
+
+    assert WorkspaceClassIndex.installed.cache_info().currsize == 1

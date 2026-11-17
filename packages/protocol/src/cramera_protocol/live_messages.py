@@ -1456,7 +1456,7 @@ class RobotInstanceKey(StrEnum):
 
     POSE = "pose"
     """
-    The robot's root pose.
+    Where the robot's description is rooted.
     """
 
     JOINT_POSITIONS = "jointPositions"
@@ -1488,7 +1488,7 @@ class RobotInstance(JsonDocument):
 
     pose: Pose = document_field(RobotInstanceKey.POSE)
     """
-    The robot's root pose in the world.
+    Where the robot's description is rooted in the world, which a viewer draws it at.
     """
 
     joint_positions: Dict[str, float] = document_field(
@@ -2004,6 +2004,11 @@ class ConstraintMonitorType(StrEnum):
     Observes whether a point's distance lies within limits.
     """
 
+    IN_FIELD_OF_VIEW = "InFieldOfView"
+    """
+    Observes whether a body lies inside the field of view of the robot's camera.
+    """
+
 
 class ConstraintActivation(StrEnum):
     """
@@ -2145,6 +2150,16 @@ class MonitorParameterKey(StrEnum):
     UPPER_LIMIT = "upper_limit"
     """
     The highest allowed height or distance.
+    """
+
+    TARGET = "target"
+    """
+    The body a field of view monitor keeps in view.
+    """
+
+    MARGIN = "margin"
+    """
+    The angle in radians a body kept in view keeps from every edge of the view.
     """
 
 

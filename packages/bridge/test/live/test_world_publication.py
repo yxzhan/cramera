@@ -13,7 +13,7 @@ import pytest
 from cramera.exceptions import PathOutsideDirectory
 from cramera.http.messages import HttpMethod
 from cramera_bridge.exceptions import MissingMeshFile, NoWorldAttached, UnknownMesh
-from cramera_bridge.geometry import NumericPose
+from cramera_bridge.geometry import NumericPose, PublishedColor
 from cramera_bridge.live.activity import SimulationActivity
 from cramera_bridge.live.objects import ServedMesh, ShapePublication
 from cramera_bridge.live.publisher import LivePublisher
@@ -32,6 +32,7 @@ from cramera_protocol.live_messages import (
 )
 from cramph.data_types import LifeCycleValues, ObservationStateValues
 from krrood_spatial_math.spatial_types import HomogeneousTransformationMatrix
+from semantic_digital_twin.world_description.color_names import ColorName
 from semantic_digital_twin.world_description.geometry import Mesh
 
 from ..dataset.live_worlds import HeightChart
@@ -77,6 +78,21 @@ def test_objects_carry_their_native_shapes(publisher, kitchen):
     assert milk.shapes[0].opacity == kitchen.milk.visual.shapes[0].color.A
     assert cup.shapes[0].kind is ShapeKind.MESH
     assert cup.shapes[0].file_format == CUP_MESH.suffix.lstrip(".")
+
+
+def test_an_object_given_a_colour_is_shown_in_it(publisher, kitchen):
+    """
+    A detection writes the colour an object was seen in into the world this way, and the
+    viewer shows the object in it.
+    """
+    red = ColorName.RED.representative_color
+
+    with kitchen.world.modify_world():
+        kitchen.milk.update_visual_color(red)
+
+    catalog = {entry.identifier: entry for entry in publisher.object_catalog().objects}
+    [shape] = catalog[str(kitchen.milk.name)].shapes
+    assert shape.color == PublishedColor(red).hexadecimal()
 
 
 def test_a_body_without_shapes_has_no_geometry_and_no_colour(publisher, kitchen):
@@ -209,3 +225,23 @@ def test_the_simulation_is_busy_right_after_a_tick():
     activity.tick()
     assert activity.is_busy() is True
     assert activity.is_busy() is False
+
+
+def test_an_object_moved_below_another_body_is_published_where_it_stands(
+    publisher, kitchen
+):
+    """
+    A grasp moves an object below the gripper while a plan performs; the snapshot its
+    model change takes shows the object where it stands, not its old offset below the
+    gripper.
+    """
+    kitchen.frame.parent_connection.origin = (
+        HomogeneousTransformationMatrix.from_xyz_rpy(
+            0.5, -0.3, 1.2, roll=3.14159, reference_frame=kitchen.root
+        )
+    )
+    publisher.pacing.plan_started(object())
+    standing = NumericPose.of_entity(kitchen.world, kitchen.milk).published()
+    kitchen.world.move_branch(kitchen.milk, kitchen.frame)
+    published = publisher.current_state().objects[str(kitchen.milk.id)]
+    assert published.to_json() == pytest.approx(standing.to_json(), abs=1e-3)

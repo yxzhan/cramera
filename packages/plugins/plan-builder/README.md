@@ -66,6 +66,8 @@ cramera
   | `Pose \| Iterable[Pose]` | pose or surface | a pose, or a surface sampled when the step runs |
   | `float`, `int`, `bool`, `str` | number, integer, boolean, text | inputs, the default as placeholder |
   | `GraspDescription` | grasp | none: derived from the action's arm and object |
+  | `VolumetricBoundingBox` | region | the regions of the scene: the whole table, a zone of the profile, or the square around a marker |
+  | `type[SemanticAnnotation]` | enum | the kinds of the plan's free objects (`object`, `block`) |
 
   `Optional[X]` is classified by `X`. A field of another type, or one whose type cannot
   be resolved, is left at its default and listed as hidden; without a default it makes
@@ -86,19 +88,70 @@ cramera
   names; never into a CRAM checkout. A demo carries its plan as JSON and runs it as
   `cramera_bridge.plans`' `RobotTaskDemo`: `python <demo>.py` performs the selected
   robot's steps, each built generically from its action's class and values, and saves
-  the recording into the local scenes directory, `--stage` only publishes the world
-  until it is stopped, `--port` chooses where it is published.
+  the recording into the local scenes directory. Every grasp first detects its object
+  (coraplex's `DetectBeforeGrasp`), whichever executor runs it. `--executor physics`
+  performs the steps in a MuJoCo physics simulation instead of kinematically, both
+  answering a detection from the simulated world as far as the robot's camera sees it;
+  `--executor perceived_physics` does so answering every detection through RoboKudo
+  (the analysis engine `CRAMERA_PERCEPTION_ENGINE` names, looking through the robot's
+  simulated camera, hosted in the demo's process), `--stage` only publishes the
+  world until it is stopped, `--port` chooses where it is published.
 - **Replays.** When the viewer shows a recording with a plan, the panel comes to the
   front and lists the plan's steps as the builder's cards (`web/steps.css`, shared
   with the builder page): a plan's steps are its outermost actions, one list per
   recorded plan, titled with the robot that performed it. The step whose recorded
   frames hold the playhead is marked running and scrolled into sight; a click on a
   step asks the viewer for its first frame.
-- **Runs.** The builder starts one demo at a time as a child process of the viewer, in
+- **Runs.** "Run plan" performs the plan kinematically, "Dry-run in physics" in MuJoCo
+  and "Run on robot" on the real robot; a robot profile's `executors` say which
+  executor each run mode uses and which modes the robot offers at all (by default
+  `perform` is kinematic and `simulate` physics; `robot` has no executor unless the
+  profile names one).
+  The builder starts one demo at a time as a child process of the viewer, in
   its own process group, keeps the newest 64 KiB of its output, and stops it with its
   group. The demo ends by itself when the viewer goes away, since it watches the pipe
   the viewer holds open. Demos publish on the live publisher's port, or on
   `CRAMERA_PLAN_BUILDER_PORT`.
+- **Validation.** "Validate" posts the plan to the `validate` route, which runs
+  `cramera_bridge.plans.validating` as a child process: every step of the selected
+  robot is tried one after another in a copy of the twin, kinematically, so nothing
+  moves (coraplex's `PlanValidation`). Each step's card shows whether it is valid,
+  assumed (a detection the camera does not see now, answered from the twin), failed
+  with its reason (unreachable, collision, not perceived, ambiguous, a skill the
+  profile does not offer) or unchecked after a failure. A step whose arm is
+  `automatic` (the default of a profile's pick) is given the arm that reaches, shown on
+  its card; the run grounds it the same way before it starts. "Run on robot" is enabled
+  only for the plan as it passed its validation: any edit of the plan or its objects
+  invalidates it, as does a live object found more than 2 cm from its pose in the
+  plan (`SCENE_TOLERANCE`), until the plan is validated again; the `run` route refuses
+  a robot run of any other plan unless the request overrides the gate, which developer
+  mode does.
+- **Detecting.** A step whose action looks in a region (Detect) starts looking at the
+  whole table. A later step of the same robot can name what it finds in an object
+  field, as `detected:<step id>`: when the plan is built, that is the one object of the
+  plan the detection's query finds, which the detection perceives again when it runs.
+  "Scan scene" in the objects list posts the plan to the `scan` route, which runs
+  `cramera_bridge.plans.scanning` as a child process: the robot looks at the table live
+  where its camera sees it, else the twin's objects are taken as assumed; a robot
+  profile's `simulatedScene` names a plan file whose objects a simulated camera sees.
+  Found objects move the plan's objects, and one the plan lacks becomes a copy of the
+  library model of its type and the `color` its collection names.
+- **Placing.** A field taking a surface (a place's `target_location`) also takes a
+  zone of the robot profile (`zones`: named rectangles on the robot's table, in the
+  frame of the robot's pose), on top of another object (one of the plan's or
+  `detected:<step id>`), or a free-place marker. These are resolved when the plan is
+  grounded, each in the copy of the twin as the steps before left it: a zone's free spot
+  within reach nearest its centre (a grid one object and twice a 1 cm clearance apart),
+  the top of the object below plus half the placed object's height, or the marker's
+  position and heading resting on the surface below it. The run grounds the plan the
+  same way before it starts and puts each object down at the pose found; the run
+  measures where it ended (`placedPosition.<step>`). The 3D view shows the zones on the
+  table. A marker slides over the surface below it (x, y and yaw only; the table's top,
+  else the floor), stays in sync with its x, y and yaw fields, and turns green or red
+  while dragged by a quick check against what the robot reaches: the `reach` route
+  answers, once per robot model, a sphere around each arm's shoulder that its tool
+  stays within (`cramera_bridge.plans.reaching`). Red is out of reach for certain;
+  green may still fail the validation, which stays the gate.
 - **Constraints** are compiled by the rule book `rules/constraints.json` into the
   monitor the live publisher observes (`VectorsAligned`, `HeightMonitor`,
   `DistanceMonitor`) and into switches of the step's own action: a rule's switch names

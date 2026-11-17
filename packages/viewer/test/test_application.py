@@ -21,7 +21,12 @@ from cramera_protocol.bundle.index import SceneIndex
 from cramera_protocol.live import Capability
 from cramera_protocol.viewer import NavigationGroup, ViewerInfo, ViewerRoute
 
-from .dataset.plugins import FactoryEntryPoint, QuestionPlugin, SilentPlugin
+from .dataset.plugins import (
+    FactoryEntryPoint,
+    QuestionPlugin,
+    RecordingPlugin,
+    SilentPlugin,
+)
 
 HEADERS = {Header.HOST: "localhost"}
 """
@@ -60,6 +65,17 @@ def test_info_names_the_viewer_and_its_plugins(plugged):
     assert info.plugins[0].capabilities == [Capability.QUESTIONS]
     assert info.plugins[1].module is None
     assert [plugin.navigation for plugin in info.plugins] == [None, None]
+
+
+def test_info_names_the_deployments_build_it_was_given(catalog, locations):
+    application = ViewerApplication(
+        catalog=catalog, locations=locations, deployment="03a7259-20261112-1830"
+    )
+    answerer = RequestAnswerer(router=application.router(), policy=OriginPolicy())
+
+    info = ViewerInfo.from_json(json.loads(get(answerer, ViewerRoute.INFO).body))
+
+    assert info.deployment == "03a7259-20261112-1830"
 
 
 def test_a_page_entry_names_the_plugins_page_as_a_viewer_route():
@@ -149,6 +165,13 @@ def test_closing_the_application_closes_every_plugin(catalog, locations, plugin)
     )
     application.close()
     assert plugin.closings == 1
+
+
+def test_plugins_start_once_every_plugins_routes_are_built(catalog, locations):
+    events = []
+    plugins = [RecordingPlugin("first", events), RecordingPlugin("second", events)]
+    ViewerApplication(catalog=catalog, locations=locations, plugins=plugins).router()
+    assert events == ["first routes", "second routes", "first start", "second start"]
 
 
 def test_plugins_are_loaded_from_entry_points_sorted_by_name():

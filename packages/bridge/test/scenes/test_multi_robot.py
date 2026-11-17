@@ -11,6 +11,7 @@ from cramera_bridge.robots import RobotRoster
 from cramera_bridge.scenes.bundle_world import BundleEnvironment
 from cramera_bridge.scenes.multi_robot import RobotPlacement, RobotScene
 from semantic_digital_twin.robots.pr2 import PR2
+from semantic_digital_twin.robots.tracy import Tracy
 from krrood_spatial_math.spatial_types import HomogeneousTransformationMatrix
 
 TORSO = "torso_lift_joint"
@@ -66,6 +67,33 @@ def test_robots_carry_their_names_and_postures(scene, world):
         if str(connection.name) == f"left/{TORSO}"
     ]
     assert torso.position == pytest.approx(0.2)
+
+
+@pytest.mark.skipif(
+    not Tracy.is_description_installed(),
+    reason="iai_tracy_description is not installed",
+)
+def test_a_robot_is_listed_where_its_description_is_rooted():
+    """
+    Tracy's annotation is rooted at its table, 0.88 m above the frame its description
+    starts at; the plan builder draws the description at the listed pose, so the pose is
+    the description's root, which the placement puts where the plan says.
+    """
+    tracy = RobotPlacement(
+        namespace="tracy_1",
+        label="Tracy",
+        robot_type=Tracy,
+        pose=HomogeneousTransformationMatrix.from_xyz_rpy(0.5, -0.25, 0.0),
+    )
+    world = RobotScene(placements=[tracy], selected_namespace="tracy_1").build_world()
+    pose = RobotRoster(world).instance(tracy.resolve(world)).pose
+    assert [pose.x, pose.y, pose.z] == pytest.approx([0.5, -0.25, 0.0])
+
+
+def test_a_moving_base_is_listed_where_it_stands(scene, world):
+    right = scene.placements[1].resolve(world)
+    pose = RobotRoster(world).instance(right).pose
+    assert [pose.x, pose.y, pose.z] == pytest.approx([2.0, 0.0, 0.0])
 
 
 def test_an_environment_is_added_to_the_robots(scene, annotated_bundle):

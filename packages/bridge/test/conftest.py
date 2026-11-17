@@ -13,6 +13,9 @@ from pathlib import Path
 
 import pytest
 
+from cramera.locations import DataLocations
+from cramera_protocol.viewer import EnvironmentVariable
+
 CRAM_PACKAGES = ("semantic_digital_twin", "coraplex", "giskardpy", "krrood", "segmind")
 """
 The CRAM packages the tests import.
@@ -68,6 +71,16 @@ def tests_needing_cram() -> list:
         if path.relative_to(TEST_DIRECTORY).as_posix() not in TESTS_WITHOUT_CRAM
     ]
     return [str(path.relative_to(TEST_DIRECTORY)) for path in directories + modules]
+
+
+@pytest.fixture
+def locations(tmp_path, monkeypatch) -> DataLocations:
+    """
+    :return: Data locations below the test's directory, which demos read from the
+        environment.
+    """
+    monkeypatch.setenv(EnvironmentVariable.DATA, str(tmp_path / "data"))
+    return DataLocations(data=tmp_path / "data", shared_scenes=None)
 
 
 if any(importlib.util.find_spec(package) is None for package in CRAM_PACKAGES):

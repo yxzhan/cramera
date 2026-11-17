@@ -12,6 +12,7 @@ import subprocess
 import sys
 import urllib.request
 from http import HTTPStatus
+from pathlib import Path
 
 import pytest
 
@@ -68,6 +69,17 @@ def test_the_configuration_reads_every_option(locations, tmp_path):
         SceneSource.DEMO,
     ]
     assert configuration.port == 9000 and not configuration.open_browser
+
+
+def test_the_configuration_reads_the_deployments_build_from_the_environment(
+    locations,
+):
+    configuration = ViewerConfiguration.from_arguments(
+        [], locations, {EnvironmentVariable.DEPLOYMENT: "03a7259-20261112-1830"}
+    )
+
+    assert configuration.deployment == "03a7259-20261112-1830"
+    assert ViewerConfiguration.from_arguments([], locations).deployment is None
 
 
 def test_the_lan_option_listens_on_every_address(locations):
@@ -283,7 +295,10 @@ def test_a_driver_that_never_listens_times_out(tmp_path):
         driver.wait_until_ready(timeout=0.3)
 
 
-def test_the_viewer_command_serves_until_terminated(tmp_path):
+def started_viewer(tmp_path) -> tuple[subprocess.Popen, str]:
+    """
+    :return: A viewer command serving on a free port, and its address.
+    """
     environment = {**os.environ, EnvironmentVariable.DATA: str(tmp_path)}
     environment.pop("PYTHONPATH", None)
     process = subprocess.Popen(
@@ -303,8 +318,48 @@ def test_the_viewer_command_serves_until_terminated(tmp_path):
     announced = next(
         line for line in iter(process.stderr.readline, "") if "cramera serves" in line
     )
-    url = announced.strip().rsplit(" ", 1)[-1]
+    return process, announced.strip().rsplit(" ", 1)[-1]
+
+
+def blocked_signals(pid: int) -> list[set[signal.Signals]]:
+    """
+    :return: The signals each thread of the process `pid` blocks; a thread it starts
+        and a process that thread starts inherit them.
+    """
+    masks = [
+        int(line.split()[1], 16)
+        for task in Path(f"/proc/{pid}/task").iterdir()
+        for line in (task / "status").read_text().splitlines()
+        if line.startswith("SigBlk:")
+    ]
+    return [
+        {number for number in signal.Signals if mask & (1 << (number - 1))}
+        for mask in masks
+    ]
+
+
+def test_the_viewer_command_serves_until_terminated(tmp_path):
+    process, url = started_viewer(tmp_path)
     with urllib.request.urlopen(url + ViewerRoute.INFO) as answer:
         assert answer.status == HTTPStatus.OK
     process.send_signal(signal.SIGTERM)
     assert process.wait(timeout=20) == 0
+
+
+def test_the_viewer_command_blocks_no_signal_its_children_would_inherit(tmp_path):
+    """
+    A process the viewer starts, such as a run on the real robot, inherits the signals
+    blocked in the thread starting it; a blocked SIGTERM made a run ignore its Stop.
+    """
+    process, _ = started_viewer(tmp_path)
+    try:
+        # a library's helper thread blocking every signal starts no process
+        assert [
+            blocked
+            for blocked in blocked_signals(process.pid)
+            if signal.SIGTERM in blocked and signal.SIGUSR1 not in blocked
+        ] == []
+    finally:
+        process.send_signal(signal.SIGTERM)
+        process.wait(timeout=20)
+    assert process.returncode == 0

@@ -5,11 +5,13 @@ Robot task demos: running, measuring, saving and publishing a task.
 from __future__ import annotations
 
 import shutil
-from dataclasses import replace
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass, field, replace
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from typing_extensions import Iterator, List, Optional
 
 from cramera.locations import DataLocations
 from cramera_bridge.database.native_plans import NativePlans
@@ -21,6 +23,7 @@ from cramera_bridge.database.runs import (
 )
 from cramera_bridge.demos.navigation import BarrierEnvironment
 from cramera_bridge.documents import DocumentFile
+from cramera_bridge.execution import KinematicExecution
 from cramera_bridge.exceptions import (
     EnvironmentBundleHoldsRobot,
     RecordingNotSaved,
@@ -184,6 +187,129 @@ def test_a_task_run_keeps_the_plans_it_performed(saved_run):
         ).all()
 
     assert numbers == list(range(1, len(performed) + 1))
+
+
+@dataclass
+class WatchedExecution(KinematicExecution):
+    """
+    A kinematic execution that knows whether the task is attached to it.
+    """
+
+    is_attached: bool = False
+    """
+    Whether the task's block of :meth:`attached` runs.
+    """
+
+    @contextmanager
+    def attached(self) -> Iterator[None]:
+        with ExitStack() as attached:
+            self.is_attached = True
+            attached.callback(setattr, self, "is_attached", False)
+            yield
+
+
+@dataclass
+class SaveWatchingTorsoDemo(TorsoDemo):
+    """
+    The torso demo noting what holds once its record starts being saved.
+    """
+
+    execution: WatchedExecution = field(default_factory=WatchedExecution)
+
+    seen_at_saving: List[tuple[bool, int]] = field(default_factory=list)
+    """
+    For each time the record started being saved: whether the execution was still
+    attached, and how many of the run's plans the plan database held.
+    """
+
+    def on_record_saving(self) -> None:
+        self.seen_at_saving.append(
+            (self.execution.is_attached, stored_plan_count(self.locations))
+        )
+
+
+def stored_plan_count(locations: DataLocations) -> int:
+    """
+    :return: How many plans the saved bundle's plan database keeps.
+    """
+    database = PlanDatabase(locations.local_scenes / SCENE_NAME)
+    with Session(database.engine()) as session:
+        return len(session.scalars(select(RecordedPlan)).all())
+
+
+@pytest.mark.skipif(
+    not NativePlans.mapping_is_built(),
+    reason="CRAM's database mapping is not generated in this workspace",
+)
+def test_a_run_stores_its_plans_only_once_the_robot_is_released(locations):
+    demo = torso_demo(locations, SaveWatchingTorsoDemo)
+
+    demo.run()
+
+    assert demo.seen_at_saving == [(False, 0)]
+    assert stored_plan_count(locations) == 1
+
+
+REFUSAL = "The real robot is not ready: the arm watchdog is not running."
+"""
+Why the stand-in of a real robot refuses a run.
+"""
+
+
+@dataclass
+class RefusingExecution(KinematicExecution):
+    """
+    An execution whose robot's check refuses the run before anything is attached.
+    """
+
+    @contextmanager
+    def attached_when_ready(self) -> Iterator[Optional[str]]:
+        yield REFUSAL
+
+
+@dataclass
+class RefusalNotingTorsoDemo(TorsoDemo):
+    """
+    The torso demo noting the refusals it is told of and whether it recorded anything.
+    """
+
+    execution: RefusingExecution = field(default_factory=RefusingExecution)
+
+    refusals: List[str] = field(default_factory=list)
+    """
+    The refusals the demo was told of, in order.
+    """
+
+    recorded: bool = False
+    """
+    Whether the demo began to build its world and perform its plans.
+    """
+
+    def on_refused(self, refusal: str) -> None:
+        self.refusals.append(refusal)
+
+    def record(self, name: str):
+        self.recorded = True
+        return super().record(name)
+
+
+def test_a_run_its_robot_refused_performs_nothing_saves_nothing_and_says_why(
+    locations,
+):
+    demo = torso_demo(locations, RefusalNotingTorsoDemo)
+
+    assert demo.run() is None
+    assert demo.refusals == [REFUSAL]
+    assert not demo.recorded
+    assert not (locations.local_scenes / SCENE_NAME).exists()
+
+
+def test_an_execution_that_attaches_says_it_is_ready():
+    execution = WatchedExecution()
+
+    with execution.attached_when_ready() as refusal:
+        assert refusal is None
+        assert execution.is_attached
 
 
 def test_a_saved_task_runs_again_as_a_further_run(locations):

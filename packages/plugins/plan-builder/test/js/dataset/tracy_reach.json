@@ -1,0 +1,9 @@
+{
+  "robot": "tracy",
+  "arms": [
+    {"arm": "left", "shoulder": [0.135, 0.2074, 1.1433], "radius": 1.5906},
+    {"arm": "right", "shoulder": [0.135, -0.2074, 1.1433], "radius": 1.5906}
+  ],
+  "table": {"area": {"minX": 0.0, "maxX": 1.18, "minY": -0.8, "maxY": 0.8}, "height": 0.88},
+  "floorHeight": 0.0
+}

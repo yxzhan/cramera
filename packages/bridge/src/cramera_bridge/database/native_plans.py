@@ -15,7 +15,8 @@ import logging
 from dataclasses import dataclass
 from enum import StrEnum
 
-from sqlalchemy.orm import Session
+from sqlalchemy import Engine, MetaData
+from sqlalchemy.orm import Session, configure_mappers
 from typing_extensions import List
 
 from krrood.ormatic.data_access_objects.helper import to_dao
@@ -23,6 +24,11 @@ from krrood.ormatic.utils import create_engine
 
 from cramera_bridge.database.runs import RecordedPlan, RunTable, StoredRun
 from cramera_bridge.live.plan import PerformedPlan
+
+SQLITE_BEGIN = "BEGIN"
+"""
+The statement beginning a transaction in SQLite explicitly.
+"""
 
 # %% CRAM's mapping
 
@@ -60,6 +66,35 @@ class NativePlans:
         """
         return importlib.util.find_spec(GeneratedMapping.PLANS) is not None
 
+    @classmethod
+    def prepare(cls) -> None:
+        """
+        Import CRAM's mapping of plans and configure it, so storing a run's plans later
+        only writes them; without a generated mapping nothing is prepared.
+        """
+        if not cls.mapping_is_built():
+            return
+        importlib.import_module(GeneratedMapping.PLANS)
+        configure_mappers()
+
+    @staticmethod
+    def create_tables(engine: Engine, schemas: List[MetaData]) -> None:
+        """
+        Create the tables of every schema the database lacks, in one transaction.
+
+        SQLite's Python driver commits each ``CREATE`` on its own unless a transaction
+        was begun explicitly; CRAM's mapping has some two thousand tables, which then
+        take about half a minute to create instead of a fraction of a second.
+
+        :param engine: The engine of the plan database.
+        :param schemas: The schemas whose tables are created.
+        """
+        with engine.connect() as connection:
+            connection.exec_driver_sql(SQLITE_BEGIN)
+            for schema in schemas:
+                schema.create_all(connection)
+            connection.commit()
+
     def store(self, plans: List[PerformedPlan]) -> None:
         """
         Store each plan with CRAM's mapping and link it to the run; without a generated
@@ -80,8 +115,7 @@ class NativePlans:
             return
         mapping = importlib.import_module(GeneratedMapping.PLANS)
         engine = create_engine(f"sqlite:///{self.run.database.path}")
-        RunTable.metadata.create_all(engine)
-        mapping.Base.metadata.create_all(engine)
+        self.create_tables(engine, [RunTable.metadata, mapping.Base.metadata])
         with Session(engine) as session, session.begin():
             for performed in plans:
                 stored = to_dao(performed.statechart)
@@ -95,3 +129,27 @@ class NativePlans:
                         stored_plan=stored.database_id,
                     )
                 )
+
+
+@dataclass(frozen=True)
+class PendingPlans:
+    """
+    The plans a saved run performed, not yet stored in the bundle's plan database:
+    storing them takes long, so a run on a robot stores them once it released the robot.
+    """
+
+    run: StoredRun
+    """
+    The saved run the plans belong to.
+    """
+
+    plans: List[PerformedPlan]
+    """
+    The plans the run performed, in the order each began.
+    """
+
+    def store(self) -> None:
+        """
+        Store the plans with the run, as :meth:`NativePlans.store` does.
+        """
+        NativePlans(self.run).store(self.plans)

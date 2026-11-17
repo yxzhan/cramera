@@ -84,6 +84,35 @@ class CollectionKey(StrEnum):
     A model's name for people.
     """
 
+    GRASP = "grasp"
+    """
+    How a model is taken hold of, an :class:`ObjectGrasp` value; from any side when it
+    is left out.
+    """
+
+    COLOR = "color"
+    """
+    The name perception gives a model's color, such as ``red``; left out for a model of
+    no single color.
+    """
+
+
+class ObjectGrasp(StrEnum):
+    """
+    How the robot takes hold of a library model.
+    """
+
+    ANY_SIDE = "any_side"
+    """
+    Around the model's origin, from any side, as nothing more is known of its shape.
+    """
+
+    FROM_ABOVE = "from_above"
+    """
+    From straight above, around the middle of its collision geometry, as a small block
+    standing on a table is taken.
+    """
+
 
 # %% library
 
@@ -119,7 +148,7 @@ class ObjectLibrary:
         descriptions = sorted(
             (self.directory / LibraryFile.OBJECTS).rglob(LibraryFile.MODEL)
         )
-        names = self.names()
+        names = self.entry_values(CollectionKey.NAME)
         return [
             ObjectModel(
                 identifier=SEPARATOR.join(
@@ -130,18 +159,29 @@ class ObjectLibrary:
             for description in descriptions
         ]
 
-    def names(self) -> Dict[str, str]:
+    def entry_values(self, key: CollectionKey) -> Dict[str, str]:
         """
-        :return: The names the library's collection files give, by slug.
+        :param key: A key of a collection's model entries.
+        :return: The value the library's collection files give under the key, by slug,
+            for the models whose entry gives one.
         """
-        names: Dict[str, str] = {}
+        return {
+            entry[CollectionKey.SLUG]: entry[key]
+            for entry in self.collection_entries()
+            if key in entry
+        }
+
+    def collection_entries(self) -> List[Dict[str, str]]:
+        """
+        :return: The model entries of every collection file of the library.
+        """
+        entries: List[Dict[str, str]] = []
         for collection in sorted(
             (self.directory / LibraryFile.OBJECTS).rglob(LibraryFile.COLLECTION)
         ):
             document = json.loads(collection.read_text(encoding="utf-8"))
-            for entry in document.get(CollectionKey.OBJECTS, []):
-                names[entry[CollectionKey.SLUG]] = entry[CollectionKey.NAME]
-        return names
+            entries.extend(document.get(CollectionKey.OBJECTS, []))
+        return entries
 
     @staticmethod
     def slug(description: Path) -> str:
@@ -161,6 +201,28 @@ class ObjectLibrary:
 
 
 # %% libraries
+
+
+@dataclass(frozen=True)
+class DescribedModel:
+    """
+    An object model with what its library's collection says about it.
+    """
+
+    model: ObjectModel
+    """
+    The model.
+    """
+
+    color: Optional[str]
+    """
+    The name perception gives the model's color, see :meth:`ObjectLibraries.color_of`.
+    """
+
+    grasp: ObjectGrasp
+    """
+    How the model is taken hold of, see :meth:`ObjectLibraries.grasp_of`.
+    """
 
 
 @dataclass(frozen=True)
@@ -206,11 +268,72 @@ class ObjectLibraries:
         """
         return [model for library in self.libraries for model in library.models()]
 
+    def described_models(self) -> List[DescribedModel]:
+        """
+        Reads each library's collections once, where asking :meth:`color_of` and
+        :meth:`grasp_of` for every model reads them once per model.
+
+        :return: The models of every library, as :meth:`models` lists them, each with
+            its color and grasp.
+        """
+        described: List[DescribedModel] = []
+        for library in self.libraries:
+            colors = library.entry_values(CollectionKey.COLOR)
+            grasps = library.entry_values(CollectionKey.GRASP)
+            for model in library.models():
+                _, _, relative = model.identifier.partition(SEPARATOR)
+                slug = ObjectLibrary.slug(Path(relative))
+                grasp = grasps.get(slug)
+                described.append(
+                    DescribedModel(
+                        model=model,
+                        color=colors.get(slug),
+                        grasp=(
+                            ObjectGrasp.ANY_SIDE
+                            if grasp is None
+                            else ObjectGrasp(grasp)
+                        ),
+                    )
+                )
+        return described
+
     def roots(self) -> Dict[str, Path]:
         """
         :return: Each library's root by its name.
         """
         return {library.name: library.directory for library in self.libraries}
+
+    def grasp_of(self, identifier: str) -> ObjectGrasp:
+        """
+        :param identifier: An object model's identifier.
+        :return: How the model is taken hold of: as its library's collection says, else
+            from any side.
+        """
+        grasp = self.entry_value(identifier, CollectionKey.GRASP)
+        return ObjectGrasp.ANY_SIDE if grasp is None else ObjectGrasp(grasp)
+
+    def color_of(self, identifier: str) -> Optional[str]:
+        """
+        :param identifier: An object model's identifier.
+        :return: The name perception gives the model's color, as its library's
+            collection says, or None when it says none.
+        """
+        return self.entry_value(identifier, CollectionKey.COLOR)
+
+    def entry_value(self, identifier: str, key: CollectionKey) -> Optional[str]:
+        """
+        :param identifier: An object model's identifier.
+        :param key: A key of a collection's model entries.
+        :return: The value the model's entry in its library's collection gives under the
+            key, or None for a model no library entry gives one.
+        """
+        library, _, relative = identifier.partition(SEPARATOR)
+        for candidate in self.libraries:
+            if relative and candidate.name == library:
+                return candidate.entry_values(key).get(
+                    ObjectLibrary.slug(Path(relative))
+                )
+        return None
 
     def path_of(self, identifier: str, directory: Path) -> Path:
         """

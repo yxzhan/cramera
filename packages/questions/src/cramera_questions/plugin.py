@@ -9,7 +9,6 @@ engine, only where both are installed, and otherwise answer what is missing.
 
 from __future__ import annotations
 
-import importlib
 import importlib.util
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -19,6 +18,7 @@ from pathlib import Path
 
 from typing_extensions import TYPE_CHECKING, Callable, Dict, List, Optional
 
+from cramera.cram_imports import CramImports
 from cramera.http.messages import HttpMethod, Request, Response
 from cramera.plugins import PluginContext, PluginRoute, ViewerPlugin
 from cramera_protocol.live import Capability
@@ -214,7 +214,7 @@ class QuestionsPlugin(ViewerPlugin):
         missing = self.installation.missing()
         if missing:
             return UnavailableQuestionRoutes(missing).routes()
-        routes = importlib.import_module(QuestionsModule.ROUTES).QuestionRoutes
+        routes = CramImports().module(QuestionsModule.ROUTES).QuestionRoutes
         answering = routes.of_catalog(context.catalog, self.class_index)
         self.caches[id(context.catalog)] = answering.questions.cache
         return answering.routes()

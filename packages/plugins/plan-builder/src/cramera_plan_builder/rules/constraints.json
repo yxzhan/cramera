@@ -29,7 +29,20 @@
       "effect": "an action with a look_at_operation_site switch, such as a transport, looks at the object before picking it up and at the target before placing it",
       "parameters": {},
       "observed": false,
-      "switch": "look_at_operation_site"
+      "switch": "look_at_operation_site",
+      "cameraMount": "head"
+    },
+    {
+      "monitorType": "InFieldOfView",
+      "phrasing": "\\blook|watch|gaze|point (at|the camera)|face the|observ|in view|an eye on|focus on|keep sight|see the|where it (operat|work)",
+      "examples": "look, watch, observe, keep in view, gaze, face the",
+      "sentence": "Look where it operates",
+      "effect": "observes whether the object stays inside the field of view of the robot's fixed camera before and while the step acts on it; the step is retried once it leaves",
+      "parameters": {
+        "target": "@object",
+        "margin": 0.02
+      },
+      "cameraMount": "fixed"
     },
     {
       "monitorType": "HeightMonitor",

@@ -13,7 +13,10 @@ from typing_extensions import List, Optional
 from coraplex.datastructures.enums import DetectionTechnique
 from coraplex.robot_plans.actions.core.misc import DetectAction
 from cramera_bridge.live.bundles import PlanTrees
+from cramera_bridge.live.plan import PlanNodeStatus
 from cramera_bridge.performing import TaskContext
+from cramera_bridge.visualization import PublishedPlanProgress
+from cramph.state_history import StateHistoryItem
 from cramph.data_types import LifeCycleValues
 from semantic_digital_twin.semantic_annotations.semantic_annotations import Handle
 from semantic_digital_twin.world import World
@@ -136,3 +139,32 @@ def test_the_recording_keeps_what_a_perception_step_saw(publisher, detection, ki
     (step,) = action.children
     assert step.perceived == [str(kitchen.milk.id)]
     assert action.perceived is None
+
+
+def reported_by_the_motion_server(detection: SmallPlan, life_cycle: LifeCycleValues):
+    """
+    Let the perception step end as a motion server reports it on the real robot: its
+    state is recorded in the plan's history, and no executor of this process ticks.
+
+    :param life_cycle: How it ended.
+    """
+    detection.set(detection.motion, life_cycle)
+    statechart = detection.statechart
+    statechart.state_history.append(
+        next_item=StateHistoryItem(
+            tick_count=len(statechart.state_history.items) + 1,
+            life_cycle_state=statechart.life_cycle_state,
+            observation_state=statechart.observation_state,
+        )
+    )
+
+
+def test_a_perception_step_the_motion_server_ran_reports_what_it_saw(
+    publisher, detection, kitchen
+):
+    progress = PublishedPlanProgress(publisher=publisher)
+    progress.after_compile(detection.executor)
+    reported_by_the_motion_server(detection, LifeCycleValues.SUCCEEDED)
+    *_, step = nodes(publisher)
+    assert step.perceived == [str(kitchen.milk.id)]
+    assert step.status == PlanNodeStatus.SUCCEEDED

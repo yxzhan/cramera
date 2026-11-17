@@ -86,17 +86,27 @@ class RequestAnswerer:
     def routed(self, request: Request) -> Response:
         """
         The HTTP boundary is where a refused request becomes an answer, so this is where
-        viewer and protocol errors are caught.
+        viewer and protocol errors are caught. Any other error of a route is answered
+        here as well, with its type and message, and its traceback is logged: otherwise
+        the connection drops and the page cannot say what went wrong.
 
         :param request: A request the policy allows.
-        :return: The router's response, or the error response of a refused request.
+        :return: The router's response, the error response of a refused request, or a
+            server error naming an unexpected error.
         """
         try:
             return self.router.answer(request)
         except ViewerError as error:
-            return Response.of_error(error.status(), error.message())
+            return Response.of_error(
+                error.status(), error.message(), error.diagnostic_output()
+            )
         except ProtocolError as error:
             return Response.of_error(HTTPStatus.BAD_REQUEST, error.message())
+        except Exception as error:
+            logger.exception("%s %s failed", request.method.value, request.path)
+            return Response.of_error(
+                HTTPStatus.INTERNAL_SERVER_ERROR, f"{type(error).__name__}: {error}"
+            )
 
 
 # %% request handler

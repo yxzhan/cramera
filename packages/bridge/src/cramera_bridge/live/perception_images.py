@@ -377,7 +377,7 @@ class WorldModelCamera(PerceptionCamera):
         if self.tracer is None or self.tracer.world is not world:
             self.tracer = RayTracer(world)
         camera_rays = self.tracer.create_camera_rays(
-            camera.root_T_forward_view,
+            camera.world_T_forward_view,
             resolution=CAMERA_RESOLUTION,
             field_of_view=camera.field_of_view,
         )

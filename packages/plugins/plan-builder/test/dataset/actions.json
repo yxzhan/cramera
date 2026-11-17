@@ -1,6 +1,36 @@
 {
   "actions": [
     {
+      "name": "detect", "savedAs": ["DetectAction"],
+      "module": "coraplex.robot_plans.actions.core.misc",
+      "label": "Detect",
+      "group": "core",
+      "documentation": "Detects an object and writes the pose it is seen at into the world.",
+      "fields": [
+        {
+          "name": "object_sem_annotation", "label": "object sem annotation", "kind": "enum", "required": false,
+          "enumType": "object_type", "members": ["object", "block"],
+          "savedMembers": {"OBJECT": "object", "BLOCK": "block"},
+          "acceptsSurface": false, "derivedFrom": [],
+          "documentation": "The type of the object that should be detected."
+        },
+        {
+          "name": "region", "label": "region", "kind": "region", "required": false,
+          "members": [], "savedMembers": {}, "acceptsSurface": false, "derivedFrom": [],
+          "documentation": "The box in which the object should be detected."
+        },
+        {
+          "name": "color", "label": "color", "kind": "enum", "required": false,
+          "enumType": "color", "members": ["red", "yellow", "blue"],
+          "savedMembers": {"RED": "red", "YELLOW": "yellow", "BLUE": "blue"},
+          "acceptsSurface": false, "derivedFrom": [],
+          "documentation": "The color the object is seen in, None for any color."
+        }
+      ],
+      "hidden": [{"name": "attributes", "type": "list[str]"}],
+      "available": true
+    },
+    {
       "name": "follow_tool_center_point_path", "savedAs": ["FollowToolCenterPointPathAction"],
       "module": "coraplex.robot_plans.actions.core.robot_body",
       "label": "Follow Tool Center Point Path",

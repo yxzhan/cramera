@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<!-- A yellow cube of 5 cm edge, 50 g. -->
+<robot name="yellow_cube">
+  <material name="yellow">
+    <color rgba="0.95 0.80 0.10 1"/>
+  </material>
+  <link name="yellow_cube">
+    <inertial>
+      <mass value="0.05"/>
+      <inertia ixx="2.08e-5" iyy="2.08e-5" izz="2.08e-5" ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+    <visual>
+      <geometry><box size="0.05 0.05 0.05"/></geometry>
+      <material name="yellow"/>
+    </visual>
+    <collision>
+      <geometry><box size="0.05 0.05 0.05"/></geometry>
+    </collision>
+  </link>
+</robot>

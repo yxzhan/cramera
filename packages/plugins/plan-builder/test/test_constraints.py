@@ -20,6 +20,7 @@ from cramera_protocol.plan_builder import (
     ConstraintText,
     RuleValue,
 )
+from cramera_protocol.robot_profile import CameraMount
 
 from .dataset.given_workspace import GivenWorkspace
 
@@ -69,13 +70,15 @@ def attached(text: str, step_action: str = "pick_up", **fields):
 
 def test_every_example_of_a_rule_is_understood_as_that_rule(compiler):
     for rule in compiler.book.rules:
+        offered_to = replace(compiler, camera_mount=rule.camera_mount)
         for example in rule.examples.split(EXAMPLE_SEPARATOR):
-            assert compiler.rule_for(example) is rule, example
+            assert offered_to.rule_for(example) is rule, example
 
 
 def test_every_rules_sentence_is_understood_as_that_rule(compiler):
     for rule in compiler.book.rules:
-        assert compiler.rule_for(rule.sentence.lower()) is rule, rule.sentence
+        offered_to = replace(compiler, camera_mount=rule.camera_mount)
+        assert offered_to.rule_for(rule.sentence.lower()) is rule, rule.sentence
 
 
 def test_every_rule_measuring_a_length_has_a_default_one(compiler):
@@ -199,6 +202,32 @@ def test_a_switch_naming_a_field_that_is_no_boolean_turns_on_nothing(compiler, a
     transport = schema_of(actions, "transport")
     rule = compiler.rule_for("look where it operates")
     assert compiler.has_switch(replace(rule, switch="arm"), transport) is False
+
+
+# %% rules offered per camera mount
+
+
+def test_a_robot_of_one_camera_mount_is_offered_no_rule_of_another(compiler):
+    fixed = replace(compiler, camera_mount=CameraMount.FIXED)
+    assert {rule.camera_mount for rule in fixed.offered_rules()} == {
+        None,
+        CameraMount.FIXED,
+    }
+
+
+def test_a_robot_of_unknown_camera_mount_is_offered_every_rule(compiler):
+    assert compiler.offered_rules() == compiler.book.rules
+
+
+def test_looking_with_a_fixed_camera_observes_the_steps_object_in_view(compiler):
+    fixed = replace(compiler, camera_mount=CameraMount.FIXED)
+    compiled = fixed.compile(attached("Look where it operates", step_object="red_cube"))
+    rule = fixed.rule_for("look where it operates")
+    assert compiled.monitor.monitor_type is ConstraintMonitorType.IN_FIELD_OF_VIEW
+    assert compiled.monitor.parameters == {
+        MonitorParameterKey.TARGET: "red_cube",
+        MonitorParameterKey.MARGIN: rule.parameters[MonitorParameterKey.MARGIN],
+    }
 
 
 def test_objects_are_ordered_by_where_the_sentence_names_them():

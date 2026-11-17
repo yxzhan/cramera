@@ -15,7 +15,13 @@ export const PlanAction = Object.freeze({
   WRITE_DEMO: 'write-demo',
   STAGE: 'stage',
   PERFORM: 'perform',
+  SIMULATE: 'simulate',
+  VALIDATE: 'validate',
+  RUN_ON_ROBOT: 'run-on-robot',
   STOP: 'stop',
+  ACKNOWLEDGE_STOP: 'acknowledge-stop',
+  RESTART_PLAN: 'restart-plan',
+  ABORT_PLAN: 'abort-plan',
   CAPTURE: 'capture',
   NAME: 'name',
   TASK: 'task',
@@ -34,12 +40,16 @@ export const PlanAction = Object.freeze({
   ROBOT_LABEL: 'robot-label',
   POSE: 'pose',
   ADD_STEP: 'add-step',
+  ADD_SKILL: 'add-skill',
+  DEVELOPER_MODE: 'developer-mode',
+  NEW_FROM_TEMPLATE: 'new-from-template',
   REMOVE_STEP: 'remove-step',
   MOVE_STEP_UP: 'move-step-up',
   MOVE_STEP_DOWN: 'move-step-down',
   STEP_PARAMETER: 'step-parameter',
   USE_LIVE_POSE: 'use-live-pose',
   ADD_OBJECT: 'add-object',
+  SCAN_SCENE: 'scan-scene',
   OBJECT_MODEL: 'object-model',
   SELECT_OBJECT: 'select-object',
   REMOVE_OBJECT: 'remove-object',
@@ -50,6 +60,10 @@ export const PlanAction = Object.freeze({
   DETACH_CONSTRAINT: 'detach-constraint',
   TURN: 'turn',
   FRAME: 'frame',
+  TOGGLE_RUN: 'toggle-run',
+  REPLACE_PLAN: 'replace-plan',
+  KEEP_PLAN: 'keep-plan',
+  SKIP_TO_FLOW: 'skip-to-flow',
 });
 
 /**
@@ -59,6 +73,8 @@ export const DomEvent = Object.freeze({
   CLICK: 'click',
   CHANGE: 'change',
   KEY_DOWN: 'keydown',
+  MOUSE_DOWN: 'mousedown',
+  BLUR: 'blur',
   DRAG_START: 'dragstart',
   DRAG_OVER: 'dragover',
   DRAG_LEAVE: 'dragleave',
@@ -69,7 +85,7 @@ export const DomEvent = Object.freeze({
 /**
  * What a dragged palette entry carries, as `<kind>:<value>` in the drag's text.
  */
-export const DragKind = Object.freeze({ STEP: 'step', CONSTRAINT: 'constraint' });
+export const DragKind = Object.freeze({ STEP: 'step', SKILL: 'skill', CONSTRAINT: 'constraint' });
 
 /**
  * The media type of a drag's text.

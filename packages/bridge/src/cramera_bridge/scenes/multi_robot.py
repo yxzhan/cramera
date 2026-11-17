@@ -87,7 +87,7 @@ class RobotPlacement:
         :return: The native description placing the robot at its start pose.
         """
         return RobotSpecification(
-            semantic_annotation_type=self.robot_type, world_T_odom=self.pose
+            semantic_annotation_type=self.robot_type, localization_pose=self.pose
         )
 
     def place(self, world: World) -> AbstractRobot:
@@ -140,6 +140,33 @@ class RobotPlacement:
         if len(robots) != 1:
             raise RobotPlacementUnavailable(self.namespace, len(robots))
         return robots[0]
+
+    def resolve_by_model(self, world: World) -> AbstractRobot:
+        """
+        :param world: A world that holds the robot under the names of its own
+            description, as the real robot reports it, rather than under this namespace.
+        :return: The one robot of this placement's model.
+        :raises RobotPlacementUnavailable: When not exactly one robot is of that model.
+        """
+        robots = world.get_semantic_annotations_by_type(self.robot_type)
+        if len(robots) != 1:
+            raise RobotPlacementUnavailable(self.namespace, len(robots))
+        return robots[0]
+
+    def name_reported_robot(self, world: World) -> AbstractRobot:
+        """
+        Name the one robot of this placement's model in a world the real robot reports
+        as a world built with this placement names it, so that the robot published is
+        found under this placement's namespace.
+
+        :param world: A world the real robot reports.
+        :return: The robot.
+        :raises RobotPlacementUnavailable: When not exactly one robot is of that model.
+        """
+        robot = self.resolve_by_model(world)
+        with world.modify_world():
+            robot.update_name(PrefixedName(self.label, prefix=self.namespace))
+        return robot
 
     def restore_joint_positions(self, world: World) -> None:
         """
@@ -222,14 +249,19 @@ class RobotScene:
             for placement in self.placements
         }
 
+    def selected_placement(self) -> RobotPlacement:
+        """
+        :return: The placement of the robot selected for the next plan.
+        """
+        return next(
+            placement
+            for placement in self.placements
+            if placement.namespace == self.selected_namespace
+        )
+
     def selected_robot(self, world: World) -> AbstractRobot:
         """
         :param world: A world built from this scene.
         :return: The robot selected for the next plan.
         """
-        selected = next(
-            placement
-            for placement in self.placements
-            if placement.namespace == self.selected_namespace
-        )
-        return selected.resolve(world)
+        return self.selected_placement().resolve(world)

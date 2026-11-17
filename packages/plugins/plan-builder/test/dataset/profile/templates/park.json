@@ -1,0 +1,9 @@
+{
+  "formatVersion": "1.3",
+  "name": "Park both arms",
+  "robots": [
+    {"id": "robot-1", "model": "tracy", "label": "Tracy", "pose": [0, 0, 0, 0, 0, 0, 1], "steps": [
+      {"id": "step-1", "skill": "park", "action": "park_arms", "values": {"arm": "both"}}
+    ]}
+  ]
+}

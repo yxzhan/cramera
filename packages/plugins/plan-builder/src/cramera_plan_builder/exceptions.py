@@ -5,6 +5,7 @@ Requests, plans and configurations the plan builder refuses.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from http import HTTPStatus
 from pathlib import Path
 
@@ -98,7 +99,8 @@ class InvalidPlanText(PlanBuilderError):
 @dataclass
 class InvalidPlanName(PlanBuilderError):
     """
-    A plan name that cannot name a demo file and a recording.
+    A plan name that is not a valid plan name, see
+    :class:`~cramera_protocol.plan_builder.PlanName`.
     """
 
     name: str
@@ -111,8 +113,8 @@ class InvalidPlanName(PlanBuilderError):
 
     def message(self) -> str:
         return (
-            f"{self.name!r} cannot name a demo and its recording: use 1 to 64 "
-            f"letters, digits, '_' or '-'."
+            f"{self.name!r} cannot be a plan's name: use 1 to 64 letters, digits, "
+            f"spaces, '_' or '-', with no space at the start or end."
         )
 
 
@@ -249,6 +251,37 @@ class UnknownReference(PlanBuilderError):
         )
 
 
+class MissingValue(StrEnum):
+    """
+    What a step's field lacks, as a person reads it.
+    """
+
+    VALUE = "a value"
+    """
+    A required field without any value.
+    """
+
+    POSE = "a pose"
+    """
+    A destination or region at a pose or marker that names no pose.
+    """
+
+    ZONE = "a zone"
+    """
+    A destination or region in a zone that names no zone.
+    """
+
+    OBJECT = "an object"
+    """
+    A destination on top of an object that names no object.
+    """
+
+    SURFACE = "a surface"
+    """
+    A destination on a surface that names no surface type.
+    """
+
+
 @dataclass
 class MissingStepParameter(PlanBuilderError):
     """
@@ -265,11 +298,34 @@ class MissingStepParameter(PlanBuilderError):
     The name of the missing field or key.
     """
 
+    step_number: int
+    """
+    The step's position in its robot's plan, counted from one, as the page numbers it.
+    """
+
+    step_title: str
+    """
+    The step's title as the page shows it: its skill's label, else its action's.
+    """
+
+    field_label: str
+    """
+    The label of the field the value is missing in, as the page shows it.
+    """
+
+    needed: MissingValue
+    """
+    What the field lacks.
+    """
+
     def status(self) -> HTTPStatus:
         return HTTPStatus.UNPROCESSABLE_ENTITY
 
     def message(self) -> str:
-        return f"{self.location} needs {self.parameter!r}."
+        return (
+            f"Step {self.step_number} ({self.step_title}) needs {self.needed} for "
+            f"“{self.field_label}”."
+        )
 
 
 @dataclass
@@ -408,8 +464,8 @@ class PlanWithoutRobot(PlanBuilderError):
 @dataclass
 class UnsupportedByCatalog(PlanBuilderError):
     """
-    A plan entry the catalog does not offer: an unknown robot, object model, environment
-    or surface type, or an enumeration member the robot does not have.
+    A plan entry the catalog does not offer: an unknown robot, object model,
+    environment, surface type or zone, or an enumeration member the robot does not have.
     """
 
     location: str
@@ -496,6 +552,29 @@ class UnreadablePlan(PlanBuilderError):
 
     def message(self) -> str:
         return f"The saved plan {self.identifier!r} cannot be read: {self.reason}"
+
+
+@dataclass
+class RunModeNotOffered(PlanBuilderError):
+    """
+    A run mode the robot profile offers no executor for.
+    """
+
+    mode: str
+    """
+    The run mode's value.
+    """
+
+    robot: str
+    """
+    The label of the profile's robot.
+    """
+
+    def status(self) -> HTTPStatus:
+        return HTTPStatus.UNPROCESSABLE_ENTITY
+
+    def message(self) -> str:
+        return f"{self.robot} offers no {self.mode!r} run."
 
 
 @dataclass
@@ -669,3 +748,162 @@ class DemoNotStarted(PlanBuilderError):
 
     def message(self) -> str:
         return f"The demo {str(self.path)!r} could not be started: {self.reason}"
+
+
+# %% bridge processes
+
+
+@dataclass
+class BridgeProcessFailed(PlanBuilderError):
+    """
+    A request whose bridge process ended without an answer.
+    """
+
+    reason: str
+    """
+    Why it failed in one short line: the message of the exception the process ended
+    with, or its last printed line.
+    """
+
+    output: str
+    """
+    The newest output of the process, warnings and traceback included.
+    """
+
+    def status(self) -> HTTPStatus:
+        return HTTPStatus.BAD_GATEWAY
+
+    def diagnostic_output(self) -> str:
+        return self.output
+
+
+# %% scans
+
+
+@dataclass
+class ScanFailed(BridgeProcessFailed):
+    """
+    A scan of the scene whose process ended without a scan.
+    """
+
+    def message(self) -> str:
+        return f"The scene could not be scanned: {self.reason}"
+
+
+# %% validation
+
+
+@dataclass
+class ValidationFailed(BridgeProcessFailed):
+    """
+    A validation of a plan whose process ended without a report.
+    """
+
+    def message(self) -> str:
+        return f"The plan could not be validated: {self.reason}"
+
+
+@dataclass
+class PlanNotValidated(PlanBuilderError):
+    """
+    A run that needs the plan's passed validation, of a plan whose latest version did
+    not pass one.
+    """
+
+    mode: str
+    """
+    The run mode's value.
+    """
+
+    real: bool = False
+    """
+    Whether the run moves the real robot.
+    """
+
+    def status(self) -> HTTPStatus:
+        return HTTPStatus.CONFLICT
+
+    def message(self) -> str:
+        if self.real:
+            return (
+                "A run on the real robot needs the plan to pass its validation first: "
+                "press Validate, then run it."
+            )
+        return (
+            f"A {self.mode!r} run needs the plan to pass its validation first; validate "
+            f"the plan as it stands now."
+        )
+
+
+@dataclass
+class SafetyStopNotAcknowledged(PlanBuilderError):
+    """
+    A run or a validation asked for while nobody acknowledged the safety stop that
+    cancelled the demo started last.
+    """
+
+    constraint: str
+    """
+    The broken safety limit.
+    """
+
+    def status(self) -> HTTPStatus:
+        return HTTPStatus.CONFLICT
+
+    def message(self) -> str:
+        return (
+            f"Safety constraint violated: {self.constraint}. Acknowledge the stop "
+            f"before the plan runs or is validated again."
+        )
+
+
+@dataclass
+class PlanRunning(PlanBuilderError):
+    """
+    A validation asked for while a demo performs a plan, or one during which such a demo
+    started: its report would let the plan run again while it runs.
+    """
+
+    mode: str
+    """
+    The running demo's run mode value.
+    """
+
+    def status(self) -> HTTPStatus:
+        return HTTPStatus.CONFLICT
+
+    def message(self) -> str:
+        return (
+            f"A {self.mode!r} run is going on; validate the plan again once it is "
+            f"over or stopped."
+        )
+
+
+@dataclass
+class RunRecordSaving(PlanBuilderError):
+    """
+    A run or a validation asked for while the demo started last still saves the record
+    of its run, which a new demo would cut short.
+    """
+
+    def status(self) -> HTTPStatus:
+        return HTTPStatus.CONFLICT
+
+    def message(self) -> str:
+        return (
+            "The last run's record is still being saved; validate or run the plan "
+            "again once it is saved."
+        )
+
+
+# %% reach
+
+
+@dataclass
+class ReachNotMeasured(BridgeProcessFailed):
+    """
+    A measure of what a robot reaches whose process ended without one.
+    """
+
+    def message(self) -> str:
+        return f"What the robot reaches could not be measured: {self.reason}"

@@ -156,6 +156,21 @@ from cramera_protocol.offline import (
     OfflineRoute,
     StoryboardKey,
 )
+from cramera_protocol.detection import (
+    DetectedObjectText,
+    DetectionGrounding,
+    DetectionRegionKey,
+    RegionKind,
+    ScanRequestKey,
+    SceneScanKey,
+)
+from cramera_protocol.validation import (
+    StepFailureReason,
+    StepValidationKey,
+    StepVerdict,
+    ValidationReportKey,
+    ValidationRequestKey,
+)
 from cramera_protocol.plan_builder import (
     PlanBuilderName,
     PlanBuilderFile,
@@ -191,12 +206,25 @@ from cramera_protocol.plan_builder import (
     RobotModelKey,
     ObjectModelKey,
     PlanBuilderCatalogKey,
+    PlanTemplateKey,
     DemoSourceKey,
     SavedDemoKey,
     RunMode,
     RunState,
     RunRequestKey,
+    ArmReportKey,
+    RobotPostureKey,
     RunStatusKey,
+    SafetyStopKey,
+    StepState,
+    RunEventKind,
+    ReportedObjectVerdict,
+    ReportedObjectKey,
+    SurfaceDepthKey,
+    PerceptionReportKey,
+    RunMonitor,
+    MonitorObservation,
+    RunEventKey,
 )
 from cramera_protocol.plugins import PluginName
 from cramera_protocol.scene_runs import (
@@ -323,6 +351,20 @@ from cramera_protocol.query_steps import (
     StepPhase,
     SteppingRequestKey,
     VariableRole,
+)
+from cramera_protocol.reach import (
+    ArmReachKey,
+    ReachRequestKey,
+    RobotReachKey,
+    TableTopKey,
+)
+from cramera_protocol.robot_profile import (
+    ExecutorKind,
+    PerceptionSettingsKey,
+    RobotProfileKey,
+    RuntimeCheck,
+    SkillKey,
+    ZoneKey,
 )
 from cramera_protocol.resolutions import (
     BackendDescriptionKey,
@@ -690,9 +732,43 @@ BROWSER_ENUMERATIONS: Tuple[Type[StrEnum], ...] = (
     DemoSourceKey,
     SavedDemoKey,
     RunMode,
+    ExecutorKind,
     RunState,
     RunRequestKey,
+    ArmReportKey,
+    RobotPostureKey,
     RunStatusKey,
+    SafetyStopKey,
+    StepState,
+    RunEventKind,
+    RunMonitor,
+    MonitorObservation,
+    RunEventKey,
+    ReportedObjectVerdict,
+    ReportedObjectKey,
+    SurfaceDepthKey,
+    PerceptionReportKey,
+    RobotProfileKey,
+    PerceptionSettingsKey,
+    RuntimeCheck,
+    SkillKey,
+    ZoneKey,
+    ArmReachKey,
+    ReachRequestKey,
+    RobotReachKey,
+    TableTopKey,
+    PlanTemplateKey,
+    RegionKind,
+    DetectionRegionKey,
+    DetectedObjectText,
+    DetectionGrounding,
+    ScanRequestKey,
+    SceneScanKey,
+    StepVerdict,
+    StepFailureReason,
+    StepValidationKey,
+    ValidationReportKey,
+    ValidationRequestKey,
 )
 """
 The enumerations the browser application reads.

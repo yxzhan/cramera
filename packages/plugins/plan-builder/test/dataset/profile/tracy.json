@@ -1,0 +1,23 @@
+{
+  "formatVersion": "1.0",
+  "robot": "tracy",
+  "label": "Tracy",
+  "platformVersion": "0.2.0",
+  "skills": [
+    {"id": "park", "label": "Park arms", "action": "park_arms", "values": {"arm": "both"}, "fields": []},
+    {"id": "pick", "label": "Pick", "action": "pick_up", "fields": ["object_designator"]}
+  ],
+  "templates": ["templates/park.json"],
+  "simulatedScene": "scenes/two_cups.json",
+  "cameraMount": "fixed",
+  "zones": [
+    {"id": "left_tray", "label": "Left tray", "area": {"minX": 0.6, "maxX": 0.8, "minY": 0.3, "maxY": 0.5}}
+  ],
+  "perception": {"answerTimeout": 12.0},
+  "safety": {
+    "workspaces": [
+      {"arm": "left", "label": "Left arm workspace", "box": {"minX": 0.3, "maxX": 1.2, "minY": -0.3, "maxY": 0.7, "minZ": 0.875, "maxZ": 1.6}}
+    ],
+    "maximumToolVelocity": 0.5
+  }
+}

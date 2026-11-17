@@ -1,0 +1,26 @@
+{
+  "formatVersion": "1.3",
+  "name": "pick_and_place_the_red_cube",
+  "task": "Pick the red cube up with the arm that reaches it and place it beside the others.",
+  "robots": [
+    {
+      "id": "robot_1",
+      "model": "tracy",
+      "label": "Tracy",
+      "pose": [0, 0, 0, 0, 0, 0, 1],
+      "steps": [
+        {"id": "step_1", "action": "park_arms", "values": {"arms": "both"}},
+        {"id": "step_2", "action": "pick_up", "values": {"grasp": "red_cube", "arm": "automatic"}},
+        {"id": "step_3", "action": "place",
+         "values": {"object_designator": "red_cube", "target_location": {"placement": "pose", "pose": [0.68, 0.15, 0.906, 0, 0, 0, 1]}}},
+        {"id": "step_4", "action": "park_arms", "values": {"arms": "both"}}
+      ]
+    }
+  ],
+  "objects": [
+    {"id": "red_cube", "model": "cube_library/objects/cubes/red_cube/model.urdf", "pose": [0.55, 0.10, 0.906, 0, 0, 0, 1]},
+    {"id": "yellow_cube", "model": "cube_library/objects/cubes/yellow_cube/model.urdf", "pose": [0.55, 0.20, 0.906, 0, 0, 0, 1]},
+    {"id": "blue_cube", "model": "cube_library/objects/cubes/blue_cube/model.urdf", "pose": [0.55, 0.30, 0.906, 0, 0, 0, 1]}
+  ],
+  "selectedRobot": "robot_1"
+}

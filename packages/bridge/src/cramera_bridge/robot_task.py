@@ -19,14 +19,20 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
-from typing_extensions import Any, Iterator, List, Optional, Self, Sequence, Tuple, Type
-
-from coraplex.plans.executors import (
-    KinematicallySimulatedPlanExecutor,
-    PlanExecutor,
+from typing_extensions import (
+    Any,
+    Callable,
+    Iterator,
+    List,
+    Optional,
+    Self,
+    Sequence,
+    Tuple,
 )
+
 from cramera.locations import DataLocations
 from cramera.scenes import SceneSource
+from cramera_bridge.database.native_plans import PendingPlans
 from cramera_bridge.database.runs import StoredRun
 from cramera_bridge.documents import DocumentFile
 from cramera_bridge.exceptions import (
@@ -34,6 +40,7 @@ from cramera_bridge.exceptions import (
     RecordingNotSaved,
     SceneNameTaken,
 )
+from cramera_bridge.execution import KinematicExecution, PlanExecution
 from cramera_bridge.export.scene_index import SceneIndexFile
 from cramera_bridge.live.query_steps import HeldQueries
 from cramera_bridge.live.server import LIVE_PORT
@@ -53,6 +60,7 @@ from cramera_protocol.live_messages import (
     SceneDestination,
 )
 from cramera_protocol.query_steps import StepPhase
+from cramph.executor import ExecutorExtension
 from cramph.node import StatechartNode
 from semantic_digital_twin.specifications.robots import RobotSpecification
 from semantic_digital_twin.world import World
@@ -137,9 +145,10 @@ class RobotTaskDemo(ABC):
     The port the run is published on while it runs.
     """
 
-    executor_type: Type[PlanExecutor] = KinematicallySimulatedPlanExecutor
+    execution: PlanExecution = field(default_factory=KinematicExecution)
     """
-    The executor running each plan, which decides how its motions are executed.
+    How each plan's motions are executed, which sets the world up while the plans run
+    and gives each plan its executor.
     """
 
     collision_avoidance: bool = False
@@ -273,12 +282,13 @@ class RobotTaskDemo(ABC):
         )[0]
         return TaskContext(world=world, robot=robot)
 
-    def performance(self) -> PlanPerformance:
+    def performance(self, context: TaskContext) -> PlanPerformance:
         """
+        :param context: The world and the robot the task is performed with.
         :return: How the task's plans are performed.
         """
         return PlanPerformance(
-            executor_type=self.executor_type,
+            execution=self.execution,
             collision_avoidance=self.collision_avoidance,
         )
 
@@ -289,15 +299,31 @@ class RobotTaskDemo(ABC):
         :param visualization: The started visualization publishing this run.
         """
 
-    def run(self) -> SavedScene:
+    def on_record_saving(self) -> None:
+        """
+        Called once the run is over and its robot released, as :attr:`execution`
+        detached, and before the plans it performed are stored, which takes long.
+        """
+
+    def on_refused(self, refusal: str) -> None:
+        """
+        Called when :attr:`execution` found its robot not ready, before it reached the
+        robot; the run ends without building its world or performing anything.
+
+        :param refusal: What is missing and what to do, as a person reads it.
+        """
+
+    def run(self) -> Optional[SavedScene]:
         """
         Perform the task while it is published and recorded, measure the outcome and
         save the recording with its measurements.
 
         A run stepping through its queries is published from before its setup, so it can
-        be held at the first query it asks.
+        be held at the first query it asks. The world is built while :attr:`execution`
+        reaches the robot. The plans it performed are stored once the robot is released.
 
-        :return: The saved bundle.
+        :return: The saved bundle; None when the robot was not ready, so nothing was
+            performed or saved.
         :raises InvalidSceneName: When the name is no bundle name.
         :raises SceneNameTaken: When the local scenes directory already holds the name
             and the run does not :attr:`adds_a_run`.
@@ -306,6 +332,26 @@ class RobotTaskDemo(ABC):
         """
         name = self.name_to_record_under()
         self.stepper = None
+        with self.execution.attached_when_ready() as refusal:
+            if refusal is not None:
+                self.on_refused(refusal)
+                return None
+            pending, metrics = self.record(name)
+        self.on_record_saving()
+        pending.store()
+        self.complete(pending.run, metrics)
+        return SavedScene(scene=pending.run.scene)
+
+    def record(self, name: str) -> tuple[PendingPlans, AcceptanceMetrics]:
+        """
+        Perform the task while it is published and recorded, measure the outcome and
+        save the recording, while :attr:`execution` reaches the robot.
+
+        :param name: The validated name the recording is saved under.
+        :return: The saved run with the plans it performed, still to be stored, and its
+            measurements.
+        :raises TaskFailed: When the measured outcome is not the task's.
+        """
         world = self.build_world()
         prepared = None if self.step_queries else self.prepare(world)
         visualization = LiveVisualization(
@@ -318,15 +364,18 @@ class RobotTaskDemo(ABC):
                     prepared = self.prepare(world)
                 context, plans = prepared
                 self.enter_phase(StepPhase.EXECUTION)
-                performance = self.performance()
-                for plan in plans:
-                    extensions = [visualization.progress()]
-                    if self.stepper is not None:
-                        extensions.append(self.stepper.progress())
-                    performance.perform(plan, context, extensions)
+                performance = self.performance(context)
+                with self.execution.running(world):
+                    for plan in plans:
+                        self.perform_plan(
+                            plan,
+                            context,
+                            performance,
+                            lambda: self.executor_extensions(visualization),
+                        )
             metrics = self.measure(context)
             visualization.publisher.finish_recording()
-            run = visualization.publisher.save_recording(
+            pending = visualization.publisher.save_recording_without_plans(
                 RecordingSaveRequest(
                     name=name,
                     destination=SceneDestination.LOCAL,
@@ -337,8 +386,37 @@ class RobotTaskDemo(ABC):
             )
         finally:
             visualization.stop()
-        self.complete(run, metrics)
-        return SavedScene(scene=run.scene)
+        return pending, metrics
+
+    def executor_extensions(
+        self, visualization: LiveVisualization
+    ) -> List[ExecutorExtension]:
+        """
+        :param visualization: The started visualization publishing this run.
+        :return: New extensions of the executor of a plan: publishing its progress, and
+            stepping through its queries when the run does.
+        """
+        extensions: List[ExecutorExtension] = [visualization.progress()]
+        if self.stepper is not None:
+            extensions.append(self.stepper.progress())
+        return extensions
+
+    def perform_plan(
+        self,
+        plan: StatechartNode,
+        context: TaskContext,
+        performance: PlanPerformance,
+        extensions: Callable[[], List[ExecutorExtension]],
+    ) -> None:
+        """
+        Perform one of the task's plans until it ended.
+
+        :param plan: The plan.
+        :param context: The world and the robot the task is performed with.
+        :param performance: How the task's plans are performed.
+        :param extensions: Gives new extensions of the executor of a plan.
+        """
+        performance.perform(plan, context, extensions())
 
     def prepare(self, world: World) -> Tuple[TaskContext, List[StatechartNode]]:
         """
@@ -496,10 +574,10 @@ class TaskCommand:
     The demo.
     """
 
-    def main(self, arguments: Sequence[str]) -> SavedScene:
+    def main(self, arguments: Sequence[str]) -> Optional[SavedScene]:
         """
         :param arguments: The command's arguments.
-        :return: The saved or published bundle.
+        :return: The saved or published bundle; None for a run its robot refused.
         """
         parser = ArgumentParser(description=self.demo.task)
         parser.add_argument(

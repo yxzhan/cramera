@@ -19,6 +19,7 @@ import {
   RunMode,
   RunRequestKey,
   StepConstraintKey,
+  ValidationRequestKey,
   ViewerRoute,
 } from 'cramera-viewer/protocol.js';
 import { PlanBuilderApi, RequestRefused } from '../../src/cramera_plan_builder/web/builder/builder-api.js';
@@ -63,6 +64,16 @@ test('a run names the plan and what the demo does', async () => {
   assert.equal(stopped.url, route(PlanBuilderRoute.RUN_STOP));
 });
 
+test('a validation names the plan and a robot run may override it', async () => {
+  const fake = new FakeFetch({ [route(PlanBuilderRoute.VALIDATE)]: {}, [route(PlanBuilderRoute.RUN)]: {} });
+  const api = new PlanBuilderApi(fake.fetch, VIEWER);
+  await api.validate({ name: 'x' });
+  await api.run({ name: 'x' }, RunMode.ROBOT, true);
+  const [validated, started] = fake.requests;
+  assert.deepEqual(validated.body, { [ValidationRequestKey.PLAN]: { name: 'x' } });
+  assert.deepEqual(started.body, { [RunRequestKey.PLAN]: { name: 'x' }, [RunRequestKey.MODE]: RunMode.ROBOT, [RunRequestKey.OVERRIDE_VALIDATION]: true });
+});
+
 test('every route is asked at its own address', async () => {
   const urls = [PlanBuilderRoute.CATALOG, PlanBuilderRoute.PLANS, `${PlanBuilderRoute.PLAN}p1`, PlanBuilderRoute.CONSTRAINT, PlanBuilderRoute.DEMO, PlanBuilderRoute.DEMOS].map(route);
   const fake = new FakeFetch(Object.fromEntries(urls.map((url) => [url, {}])));
@@ -84,6 +95,16 @@ test('a refusal carries the reason the server gave, or the status text', async (
   const api = new PlanBuilderApi(fake.fetch, VIEWER);
   await assert.rejects(api.demo({}), (error) => error instanceof RequestRefused && error.status === 422 && error.message === 'needs a target');
   await assert.rejects(api.catalog(), (error) => error.message === 'Bad Gateway');
+});
+
+test('a refusal carries the output of the process behind it apart from its reason', async () => {
+  const fake = new FakeFetch({
+    [route(PlanBuilderRoute.DEMO)]: new FakeRefusal(502, { [ErrorKey.ERROR]: 'The scene could not be scanned: no answer', [ErrorKey.OUTPUT]: 'a warning\nTraceback' }),
+    [route(PlanBuilderRoute.CATALOG)]: new FakeRefusal(422, { [ErrorKey.ERROR]: 'needs a target' }),
+  });
+  const api = new PlanBuilderApi(fake.fetch, VIEWER);
+  await assert.rejects(api.demo({}), (error) => error.message === 'The scene could not be scanned: no answer' && error.output === 'a warning\nTraceback');
+  await assert.rejects(api.catalog(), (error) => error.output === null);
 });
 
 // %% live publisher

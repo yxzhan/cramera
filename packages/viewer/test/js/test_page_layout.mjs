@@ -116,6 +116,11 @@ test('the build stamp names the version, the short commit and the build time', (
   assert.equal(versionOf({ [ViewerInfoKey.VERSION]: '1.0.0' }), 'v1.0.0');
 });
 
+test('a deployment\'s build follows the version, so a person can tell which build runs', () => {
+  const info = { [ViewerInfoKey.VERSION]: '1.0.0', [ViewerInfoKey.DEPLOYMENT]: '03a7259-20261112-1830' };
+  assert.equal(versionOf(info), 'v1.0.0 · build 03a7259-20261112-1830');
+});
+
 // %% theme
 
 test('the theme is dark unless light was chosen, and the choice is kept', () => {

@@ -295,7 +295,7 @@ cramera-record-classes ~/.cramera/scenes --scene my_recording
 
 | Command | What it does |
 | --- | --- |
-| `cramera` | Serve the viewer. `--lan` serves the network too (see [Watch from a phone](#watch-from-a-phone)), `--public-origin ORIGIN` a password-checking proxy (see [Serve behind a proxy](#serve-behind-a-proxy)). `--logo FILE` (or `CRAMERA_LOGO`) shows another `.png`, `.svg` or `.jpg` instead of the AICOR logo in every page's top bar, `--logo-text TEXT` says what it shows. |
+| `cramera` | Serve the viewer. `--lan` serves the network too (see [Watch from a phone](#watch-from-a-phone)), `--public-origin ORIGIN` a password-checking proxy (see [Serve behind a proxy](#serve-behind-a-proxy)). `--logo FILE` (or `CRAMERA_LOGO`) shows another `.png`, `.svg` or `.jpg` instead of the AICOR logo in every page's top bar, `--logo-text TEXT` says what it shows. `CRAMERA_DEPLOYMENT` names the build of the deployment the viewer runs in, such as the AICOR platform's, shown after the version in the top bar. |
 | `cramera connect USER@SERVER` | Open a viewer that runs on another machine, or with `--container NAME` in a container there, in this machine's browser through `ssh` (see [Watch a remote server or container](#watch-a-remote-server-or-container)). |
 | `cramera-shot URL OUT.png` | Take a screenshot in headless Chrome (`--browser chrome`, needs `chromedriver`) or Firefox (`--browser firefox`, needs `geckodriver`) once the page reports its scene as shown; exits 1 when it fails. |
 | `cramera-export-site OUT --scenes DIR [--plugin NAME] [--logo FILE]` | Write the viewer and the bundles of a directory as a static site, for any web server, with the browser files of the named installed plugins and the given logo. |

@@ -200,20 +200,22 @@ def test_the_driver_waits_while_another_thread_holds_the_world(
         )
     )
     holding, released = threading.Event(), threading.Event()
+    held = []
 
     def hold_world() -> None:
         with robot_publisher.world_lock:
+            held.append(left_arm_positions(fresh_robot))
             holding.set()
             released.wait()
+            held.append(left_arm_positions(fresh_robot))
 
     holder = threading.Thread(target=hold_world)
     holder.start()
     holding.wait()
-    held_before = left_arm_positions(fresh_robot)
     wait_ticks()
-    held_after = left_arm_positions(fresh_robot)
     released.set()
     holder.join()
+    held_before, held_after = held
     wait_ticks()
     released_after = left_arm_positions(fresh_robot)
     robot_publisher.stop_teleoperation()
@@ -233,3 +235,39 @@ def test_stopping_while_holding_the_world_does_not_wait_for_the_driver(
     with robot_publisher.world_lock:
         robot_publisher.stop_teleoperation()
     assert not thread.is_alive()
+
+
+# %% locking
+
+
+def test_listing_the_robots_while_the_world_reports_a_change_does_not_deadlock(
+    fresh_robot, robot_publisher
+):
+    """
+    A physics simulation writes the world's state and reports the change while it
+    holds the world's lock; a request listing the robots at that moment reads the same
+    state, and both have to finish.
+    """
+    simulating, listing = threading.Event(), threading.Event()
+
+    def report_a_change() -> None:
+        with fresh_robot.world.state.world_lock:
+            simulating.set()
+            listing.wait()
+            time.sleep(0.2)
+            robot_publisher.observe_state_change()
+
+    def list_robots() -> None:
+        simulating.wait()
+        listing.set()
+        robot_publisher.robots()
+
+    threads = [
+        threading.Thread(target=report_a_change, daemon=True),
+        threading.Thread(target=list_robots, daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5.0)
+    assert [thread.is_alive() for thread in threads] == [False, False]

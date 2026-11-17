@@ -3,9 +3,10 @@ The robot plan ${name}, composed in the cramera plan builder.
 
 ``python ${file_name}`` builds the plan's world, lets the selected robot perform its
 steps while the run is published to the viewer, and saves the recording into the local
-scenes directory. ``--stage`` only builds the world and publishes it until the process
-is stopped, so its objects can be placed by hand; ``--port`` chooses where it is
-published.
+scenes directory. ``--executor physics`` performs the steps in a MuJoCo physics
+simulation instead of kinematically. ``--stage`` only builds the world and publishes it
+until the process is stopped, so its objects can be placed by hand; ``--port`` chooses
+where it is published.
 """
 
 from __future__ import annotations

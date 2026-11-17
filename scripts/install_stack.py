@@ -102,6 +102,13 @@ SUBMODULES_FILE = ".gitmodules"
 The file naming this repository's submodules, such as its object libraries.
 """
 
+GIT_DIRECTORY = ".git"
+"""
+The entry that makes this repository a git checkout: a directory, or a file pointing
+into a superproject's git directory when it is a submodule itself. A copy without it,
+such as the one a container image is built from, already holds its submodules' files.
+"""
+
 PYPROJECT = "pyproject.toml"
 """
 The file naming a package and, for the CRAM workspace, its members.
@@ -358,7 +365,11 @@ class StackInstallation:
         """
         if self.cram is not None and not self.cram.directory.is_dir():
             self.run(self.cram.clone_command())
-        if self.cram is not None and (REPOSITORY_ROOT / SUBMODULES_FILE).is_file():
+        if (
+            self.cram is not None
+            and (REPOSITORY_ROOT / SUBMODULES_FILE).is_file()
+            and (REPOSITORY_ROOT / GIT_DIRECTORY).exists()
+        ):
             # the object libraries under resources/ the plan builder offers
             self.run(
                 ["git", "-C", str(REPOSITORY_ROOT), "submodule", "update", "--init"]

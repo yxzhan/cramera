@@ -10,6 +10,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,6 +32,7 @@ from cramera.plugins import PluginLoader
 from cramera.remote_connection import connect, pipe
 from cramera.scenes import SceneCatalog, SceneDirectory, SceneSource
 from cramera.viewer_options import DEFAULT_PORT, Announcement, Option, Subcommand
+from cramera_protocol.viewer import EnvironmentVariable
 
 logger = logging.getLogger(__name__)
 """
@@ -97,6 +99,12 @@ class ViewerConfiguration:
     Whether the viewer ends once its standard input closes.
     """
 
+    deployment: Optional[str] = None
+    """
+    Which build of the deployment the viewer runs in, from
+    :attr:`EnvironmentVariable.DEPLOYMENT`; None outside a deployment.
+    """
+
     @classmethod
     def from_arguments(
         cls,
@@ -157,6 +165,7 @@ class ViewerConfiguration:
             branding=branding,
             public_origin=public_origin,
             ends_with_input=parsed.lifeline,
+            deployment=(environment or {}).get(EnvironmentVariable.DEPLOYMENT),
         )
 
     def scene_directories(self) -> List[SceneDirectory]:
@@ -183,6 +192,7 @@ class ViewerConfiguration:
             locations=self.locations,
             plugins=PluginLoader().load(),
             branding=self.branding,
+            deployment=self.deployment,
         )
         answerer = RequestAnswerer(router=application.router(), policy=self.policy())
         return HttpServer(
@@ -308,8 +318,12 @@ def serve(arguments: Sequence[str]) -> None:
     """
     locations = DataLocations.from_environment(os.environ, Path.home())
     configuration = ViewerConfiguration.from_arguments(arguments, locations, os.environ)
-    stop_signals = {signal.SIGINT, signal.SIGTERM}
-    signal.pthread_sigmask(signal.SIG_BLOCK, stop_signals)
+    # The stop signals are handled, not blocked: every thread started here and every
+    # process such a thread starts, such as a run on the real robot, would inherit a
+    # blocked signal, and a run blocking SIGTERM ignored its Stop.
+    stopped = threading.Event()
+    for stop_signal in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(stop_signal, lambda *received: stopped.set())
     if configuration.ends_with_input:
         Lifeline(sys.stdin.fileno()).watch()
     try:
@@ -328,7 +342,7 @@ def serve(arguments: Sequence[str]) -> None:
         configuration.announce_network(server)
         if configuration.open_browser:
             webbrowser.open(server.url())
-        signal.sigwait(stop_signals)
+        stopped.wait()
     finally:
         server.stop()
 

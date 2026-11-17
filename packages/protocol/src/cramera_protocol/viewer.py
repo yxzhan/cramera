@@ -78,6 +78,12 @@ class ErrorKey(StrEnum):
     The reason the request failed.
     """
 
+    OUTPUT = "output"
+    """
+    The whole output of the process behind the failure, for a person looking into it;
+    absent when no process printed one.
+    """
+
 
 # %% environment
 
@@ -100,6 +106,12 @@ class EnvironmentVariable(StrEnum):
     LOGO = "CRAMERA_LOGO"
     """
     An image file the viewer shows as its logo instead of the AICOR logo.
+    """
+
+    DEPLOYMENT = "CRAMERA_DEPLOYMENT"
+    """
+    Which build of the deployment the viewer runs in, such as the AICOR platform's
+    build id, shown beside the viewer's version.
     """
 
 
@@ -329,6 +341,11 @@ class ViewerInfoKey(StrEnum):
     What the logo shows, for people who cannot see it.
     """
 
+    DEPLOYMENT = "deployment"
+    """
+    Which build of the deployment the viewer runs in.
+    """
+
 
 class Serving(StrEnum):
     """
@@ -385,4 +402,10 @@ class ViewerInfo(JsonDocument):
     logo_text: Optional[str] = document_field(ViewerInfoKey.LOGO_TEXT, default=None)
     """
     What the logo at :attr:`ViewerRoute.LOGO` shows, or None for the AICOR logo.
+    """
+
+    deployment: Optional[str] = document_field(ViewerInfoKey.DEPLOYMENT, default=None)
+    """
+    Which build of the deployment the viewer runs in, as
+    :attr:`EnvironmentVariable.DEPLOYMENT` names it, or None outside a deployment.
     """

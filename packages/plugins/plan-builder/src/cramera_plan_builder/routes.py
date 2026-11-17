@@ -1,6 +1,6 @@
 """
 The plan builder's routes: the catalog, saved plans, constraint compilation, generated
-demos, the demo process and the object and robot models' files.
+demos, validation, the demo process and the object and robot models' files.
 """
 
 from __future__ import annotations
@@ -24,11 +24,19 @@ from cramera_plan_builder.exceptions import (
     ContentTooLarge,
     MalformedRequestBody,
     NotAUrdfFile,
+    PlanNotValidated,
+    UnsupportedByCatalog,
 )
+from cramera_plan_builder.mirroring import PostureMirror
 from cramera_plan_builder.plans import CatalogCheck, PlanCheck, PlanStore
+from cramera_plan_builder.profiles import ConfiguredProfile
+from cramera_plan_builder.reaches import RobotReaches
 from cramera_plan_builder.runs import DemoRunner
+from cramera_plan_builder.scans import SceneScans
 from cramera_plan_builder.urdf_folders import URDF_SOURCE_SUFFIXES, UrdfFolders
+from cramera_plan_builder.validations import PlanValidations, ValidationGate
 from cramera_plan_builder.workspace import RobotModelFiles, WorkspaceLoader
+from cramera_protocol.detection import ScanRequest, SceneScanOrder
 from cramera_protocol.plan_builder import (
     ActionSchema,
     ConstraintText,
@@ -40,10 +48,20 @@ from cramera_protocol.plan_builder import (
     PlanList,
     PlanRecord,
     RunRequest,
+    RunStatus,
     SavedNames,
     UrdfEnvironment,
     UrdfFolderParameter,
     EnvironmentAnnotationsParameter,
+)
+from cramera_protocol.reach import ReachRequest, ReachRequestKey
+from cramera_protocol.robot_profile import ExecutorKind, PerceptionSettings
+from cramera_protocol.validation import (
+    StepFailureReason,
+    StepValidation,
+    StepVerdict,
+    ValidationReport,
+    ValidationRequest,
 )
 
 # %% request bodies
@@ -156,12 +174,43 @@ class PlanBuilderRoutes:
     Lists the folders the URDF picker browses.
     """
 
+    profile: ConfiguredProfile = field(default_factory=ConfiguredProfile)
+    """
+    The robot profile new plans start from and its templates; none by default.
+    """
+
+    scans: SceneScans = field(default_factory=SceneScans)
+    """
+    Scans the scene for a plan's objects.
+    """
+
+    validations: PlanValidations = field(default_factory=PlanValidations)
+    """
+    Validates plans.
+    """
+
+    gate: ValidationGate = field(default_factory=ValidationGate)
+    """
+    The plan whose validation passed last, which alone may run where a run needs one.
+    """
+
+    reaches: RobotReaches = field(default_factory=RobotReaches)
+    """
+    Measures what robot models reach.
+    """
+
+    mirror: PostureMirror = field(default_factory=PostureMirror)
+    """
+    Mirrors where the real robot stands, while the builder is attached to it.
+    """
+
     def declarations(self) -> List[RouteDeclaration]:
         """
         :return: The routes, below the plugin's prefix.
         """
         return [
             PluginRoute(HttpMethod.GET, PlanBuilderRoute.CATALOG, self.answer_catalog),
+            PluginRoute(HttpMethod.GET, PlanBuilderRoute.POSTURE, self.answer_posture),
             PluginRoute(
                 HttpMethod.POST, PlanBuilderRoute.ENVIRONMENTS, self.answer_environment
             ),
@@ -188,6 +237,16 @@ class PlanBuilderRoutes:
             PluginRoute(HttpMethod.GET, PlanBuilderRoute.RUN, self.answer_run_status),
             PluginRoute(HttpMethod.POST, PlanBuilderRoute.RUN, self.answer_run),
             PluginRoute(HttpMethod.POST, PlanBuilderRoute.RUN_STOP, self.answer_stop),
+            PluginRoute(
+                HttpMethod.POST,
+                PlanBuilderRoute.RUN_ACKNOWLEDGE,
+                self.answer_acknowledge,
+            ),
+            PluginRoute(HttpMethod.POST, PlanBuilderRoute.SCAN, self.answer_scan),
+            PluginRoute(
+                HttpMethod.POST, PlanBuilderRoute.VALIDATE, self.answer_validate
+            ),
+            PluginRoute(HttpMethod.POST, PlanBuilderRoute.REACH, self.answer_reach),
             PluginPrefixRoute(
                 HttpMethod.GET, PlanBuilderRoute.OBJECT_FILES, self.answer_object_file
             ),
@@ -214,10 +273,12 @@ class PlanBuilderRoutes:
             saved_surface_types=workspace.saved_surface_types(),
             actions=actions.actions,
             failed_action_modules=actions.failed_modules,
-            constraint_rules=list(self.compiler.book.rules),
+            constraint_rules=self.compiler.offered_rules(),
             plans=self.plans.summaries(),
             limits=self.limits,
             missing=workspace.missing(),
+            profile=self.profile.profile,
+            templates=self.profile.templates,
         )
 
     def answer_catalog(self, request: Request) -> Response:
@@ -348,9 +409,12 @@ class PlanBuilderRoutes:
         :param plan: A plan as it was saved or sent.
         :return: The plan naming actions and robots by the catalog's identifiers; a plan
             of the planner's class names is translated through the names the catalog
-            lists them as having been saved under.
+            lists them as having been saved under, and a step of a profile's skill names
+            the action the profile maps the skill to now.
         """
-        return SavedNames.of_catalog(self.catalog()).translated(plan)
+        return self.profile.resolved(
+            SavedNames.of_catalog(self.catalog()).translated(plan)
+        )
 
     def runnable(self, plan: PlanDocument) -> DemoDocument:
         """
@@ -364,10 +428,30 @@ class PlanBuilderRoutes:
         check.check(plan)
         check.complete(plan)
         CatalogCheck(self.catalog(), self.limits).check(plan)
+        return self.demo_document(plan)
+
+    def demo_document(self, plan: PlanDocument) -> DemoDocument:
+        """
+        :param plan: A checked plan.
+        :return: The plan with its environment's directory, found among the viewer's
+            scenes, and the robot profile's zones and safety limits.
+        """
+        profile = self.profile.profile
+        zones = [] if profile is None else list(profile.zones)
+        safety = None if profile is None else profile.safety
+        perception = PerceptionSettings() if profile is None else profile.perception
         if plan.environment is None:
-            return DemoDocument(plan=plan)
+            return DemoDocument(
+                plan=plan, zones=zones, safety=safety, perception=perception
+            )
         directory = self.scenes.directory_of(plan.environment).path / plan.environment
-        return DemoDocument(plan=plan, environment_directory=str(directory.resolve()))
+        return DemoDocument(
+            plan=plan,
+            environment_directory=str(directory.resolve()),
+            zones=zones,
+            safety=safety,
+            perception=perception,
+        )
 
     def answer_demo(self, request: Request) -> Response:
         """
@@ -391,23 +475,157 @@ class PlanBuilderRoutes:
         """
         :param request: A request whose body is a :class:`RunRequest`.
         :return: The state of the started demo.
+        :raises PlanNotValidated: When the mode needs a validated plan, the plan is not
+            the one whose validation passed last and the request does not override it.
+            No request overrides the gate of a run on the real robot. A run on the
+            real robot moves it, so the next run needs a new validation, unless the
+            robot's check refused the run before anything moved.
         """
         run = RunRequest.from_json(self.body(request))
-        return Response.of_json(self.runner.start(self.runnable(run.plan), run.mode))
+        demo = self.runnable(run.plan)
+        real = self.profile.moves_real_robot(run.mode)
+        if (
+            run.mode.needs_validation
+            and not self.gate.admits(demo.plan)
+            and not (run.override_validation and not real)
+        ):
+            raise PlanNotValidated(run.mode.value, real=real)
+        executor = self.profile.executor_for(run.mode)
+        status = self.runner.start(demo, run.mode, executor)
+        if executor is ExecutorKind.REAL:
+            self.gate.close(kept_if=self.runner.current.refused_before_motion)
+        return Response.of_json(self.with_validation_held(status))
 
     def answer_run_status(self, request: Request) -> Response:
         """
         :param request: A request for the demo's state.
         :return: The state of the demo started last.
         """
-        return Response.of_json(self.runner.status())
+        return Response.of_json(self.with_validation_held(self.runner.status()))
+
+    def with_validation_held(self, status: RunStatus) -> RunStatus:
+        """
+        :param status: The state of the demo started last.
+        :return: The state, saying whether the gate holds a passed validation, which
+            the page compares with its own, as a restart of the plan builder empties
+            the gate.
+        """
+        return replace(status, validation_held=self.gate.holds_validation())
+
+    def answer_posture(self, request: Request) -> Response:
+        """
+        :param request: A request for the real robot's posture.
+        :return: The joint positions its drivers reported last and how long ago each
+            arm's did; none while the builder is not attached to the real robot.
+        """
+        return Response.of_json(self.mirror.posture())
 
     def answer_stop(self, request: Request) -> Response:
         """
         :param request: A request to stop the demo.
         :return: The state of the stopped demo.
         """
-        return Response.of_json(self.runner.stop())
+        return Response.of_json(self.with_validation_held(self.runner.stop()))
+
+    def answer_acknowledge(self, request: Request) -> Response:
+        """
+        :param request: A request acknowledging the safety stop of the demo.
+        :return: The state of the demo started last, its stop acknowledged.
+        """
+        return Response.of_json(self.with_validation_held(self.runner.acknowledge()))
+
+    # %% scans
+
+    def answer_scan(self, request: Request) -> Response:
+        """
+        Scan the scene the plan's robot sees: the simulated scene the profile names, or
+        what the robot's own perception sees. The plan's steps are not checked, since a
+        scan finds the objects they may still lack.
+
+        :param request: A request whose body is a :class:`ScanRequest`.
+        :return: The :class:`SceneScan`, the plan's objects after the scan.
+        """
+        scan = ScanRequest.from_json(self.body(request))
+        plan = self.translated(scan.plan)
+        PlanCheck(self.limits).check(plan)
+        CatalogCheck(self.catalog(), self.limits).check_scene(plan)
+        return Response.of_json(
+            self.scans.scan(
+                SceneScanOrder(
+                    demo=self.demo_document(plan),
+                    region=scan.region,
+                    simulated_objects=self.profile.simulated_objects,
+                )
+            )
+        )
+
+    # %% validation
+
+    def answer_validate(self, request: Request) -> Response:
+        """
+        Validate a plan the plan builder checked: a step naming a skill the robot
+        profile does not offer fails it, else every step is tried in a copy of the twin.
+        The plan may run where a run needs a validated plan once it passed.
+
+        :param request: A request whose body is a :class:`ValidationRequest`.
+        :return: The :class:`ValidationReport`.
+        :raises SafetyStopNotAcknowledged: While nobody acknowledged the safety stop of
+            the demo started last.
+        :raises RunRecordSaving: While the demo started last saves its run's record.
+        :raises PlanRunning: While a demo performs a plan, or when one started while
+            the plan was validated; the gate stays as it was.
+        """
+        before = self.runner.refuse_to_validate()
+        demo = self.runnable(ValidationRequest.from_json(self.body(request)).plan)
+        report = self.report_unoffered_skills(demo.plan) or self.validations.validate(
+            self.profile.validation_order(demo)
+        )
+        self.runner.refuse_validated(before)
+        self.gate.record(demo.plan, report)
+        return Response.of_json(report)
+
+    def report_unoffered_skills(self, plan: PlanDocument) -> Optional[ValidationReport]:
+        """
+        :param plan: A checked plan.
+        :return: The report failing every step of the performing robot that names a
+            skill the robot profile does not offer, the others unchecked; None when
+            every step's skill is offered.
+        """
+        unoffered = {
+            step.identifier for step in self.profile.find_unoffered_steps(plan)
+        }
+        if not unoffered:
+            return None
+        return ValidationReport(
+            steps=[
+                (
+                    StepValidation(
+                        step=step.identifier,
+                        verdict=StepVerdict.FAILED,
+                        reason=StepFailureReason.SKILL_NOT_OFFERED,
+                    )
+                    if step.identifier in unoffered
+                    else StepValidation(
+                        step=step.identifier, verdict=StepVerdict.UNCHECKED
+                    )
+                )
+                for step in plan.performing_robot().steps
+            ]
+        )
+
+    # %% reach
+
+    def answer_reach(self, request: Request) -> Response:
+        """
+        :param request: A request whose body is a :class:`ReachRequest`.
+        :return: The :class:`RobotReach` of the robot model.
+        :raises UnsupportedByCatalog: When the catalog offers no such robot model.
+        """
+        reach = ReachRequest.from_json(self.body(request))
+        offered = [robot.name for robot in self.workspace.workspace().robots()]
+        if reach.robot not in offered:
+            raise UnsupportedByCatalog(ReachRequestKey.ROBOT, reach.robot, offered)
+        return Response.of_json(self.reaches.reach(reach))
 
     def body(self, request: Request) -> Any:
         """

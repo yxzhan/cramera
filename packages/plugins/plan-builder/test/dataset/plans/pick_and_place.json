@@ -1,5 +1,5 @@
 {
-  "formatVersion": "1.3",
+  "formatVersion": "1.4",
   "name": "pr2_pick_and_place",
   "task": "Pick the milk up and put it down beside",
   "selectedRobot": "robot_1",

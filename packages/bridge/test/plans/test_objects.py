@@ -11,6 +11,8 @@ from pathlib import Path
 from cramera_bridge.plans.objects import (
     LIBRARY_VARIABLE,
     REPOSITORY_RESOURCES,
+    DescribedModel,
+    ObjectGrasp,
     ObjectLibraries,
     ObjectLibrary,
 )
@@ -71,5 +73,35 @@ def test_an_identifier_resolves_into_its_library_or_the_mesh_directory(tmp_path)
     assert [model.identifier for model in libraries.models()] == [CUP, BOX]
 
 
+def test_a_model_is_taken_from_any_side_unless_its_collection_says_otherwise():
+    libraries = ObjectLibraries([ObjectLibrary(LIBRARY)])
+    assert libraries.grasp_of(CUP) is ObjectGrasp.FROM_ABOVE
+    assert libraries.grasp_of(BOX) is ObjectGrasp.ANY_SIDE
+    assert libraries.grasp_of("milk.stl") is ObjectGrasp.ANY_SIDE
+    assert libraries.grasp_of("other/objects/cup/model.urdf") is ObjectGrasp.ANY_SIDE
+
+
 def test_the_repository_resources_are_beside_the_packages():
     assert REPOSITORY_RESOURCES == Path(__file__).resolve().parents[4] / "resources"
+
+
+def test_a_model_shows_the_color_its_collection_names():
+    cubes = DATASET / "cube_library"
+    libraries = ObjectLibraries([ObjectLibrary(cubes)])
+    assert libraries.color_of("cube_library/objects/cubes/red_cube/model.urdf") == "red"
+    assert libraries.color_of(CUP) is None
+    assert libraries.color_of("milk.stl") is None
+
+
+def test_every_model_is_described_as_its_identifier_names_its_color_and_grasp():
+    libraries = ObjectLibraries(
+        [ObjectLibrary(DATASET / "cube_library"), ObjectLibrary(LIBRARY)]
+    )
+    assert libraries.described_models() == [
+        DescribedModel(
+            model=model,
+            color=libraries.color_of(model.identifier),
+            grasp=libraries.grasp_of(model.identifier),
+        )
+        for model in libraries.models()
+    ]

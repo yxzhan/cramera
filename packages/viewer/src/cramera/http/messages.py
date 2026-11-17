@@ -494,10 +494,17 @@ class Response:
         return cls(body=path.read_bytes(), media_type=MediaType.of_path(path))
 
     @classmethod
-    def of_error(cls, status: HTTPStatus, message: str) -> Self:
+    def of_error(
+        cls, status: HTTPStatus, message: str, output: str | None = None
+    ) -> Self:
         """
         :param status: The error status.
         :param message: The reason, for the person reading the error.
-        :return: The error as a JSON response ``{"error": message}``.
+        :param output: The whole output of the process behind the error, if any.
+        :return: The error as a JSON response ``{"error": message}``, with
+            ``"output"`` when an output is given.
         """
-        return cls.of_json({ErrorKey.ERROR: message}, status)
+        body = {ErrorKey.ERROR: message}
+        if output is not None:
+            body[ErrorKey.OUTPUT] = output
+        return cls.of_json(body, status)

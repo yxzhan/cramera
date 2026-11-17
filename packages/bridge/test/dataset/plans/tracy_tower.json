@@ -1,0 +1,32 @@
+{
+  "formatVersion": "1.3",
+  "name": "red_yellow_blue_tower",
+  "task": "Put the red cube into the centre zone, the yellow one on top of it and the blue one on top of the yellow one.",
+  "robots": [
+    {
+      "id": "robot_1",
+      "model": "tracy",
+      "label": "Tracy",
+      "pose": [0, 0, 0, 0, 0, 0, 1],
+      "steps": [
+        {"id": "step_1", "action": "park_arms", "values": {"arms": "both"}},
+        {"id": "step_2", "action": "pick_up", "values": {"grasp": "red_cube", "arm": "automatic"}},
+        {"id": "step_3", "action": "place",
+         "values": {"object_designator": "red_cube", "target_location": {"placement": "zone", "zone": "center"}}},
+        {"id": "step_4", "action": "pick_up", "values": {"grasp": "yellow_cube", "arm": "automatic"}},
+        {"id": "step_5", "action": "place",
+         "values": {"object_designator": "yellow_cube", "target_location": {"placement": "on_top_of", "object": "red_cube"}}},
+        {"id": "step_6", "action": "pick_up", "values": {"grasp": "blue_cube", "arm": "automatic"}},
+        {"id": "step_7", "action": "place",
+         "values": {"object_designator": "blue_cube", "target_location": {"placement": "on_top_of", "object": "yellow_cube"}}},
+        {"id": "step_8", "action": "park_arms", "values": {"arms": "both"}}
+      ]
+    }
+  ],
+  "objects": [
+    {"id": "red_cube", "model": "cube_library/objects/cubes/red_cube/model.urdf", "pose": [0.55, 0.10, 0.906, 0, 0, 0, 1]},
+    {"id": "yellow_cube", "model": "cube_library/objects/cubes/yellow_cube/model.urdf", "pose": [0.55, 0.20, 0.906, 0, 0, 0, 1]},
+    {"id": "blue_cube", "model": "cube_library/objects/cubes/blue_cube/model.urdf", "pose": [0.55, 0.30, 0.906, 0, 0, 0, 1]}
+  ],
+  "selectedRobot": "robot_1"
+}

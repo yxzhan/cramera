@@ -1,0 +1,7 @@
+{
+  "objects": [
+    {"slug": "red_cube", "name": "Red cube", "grasp": "from_above", "color": "red"},
+    {"slug": "yellow_cube", "name": "Yellow cube", "grasp": "from_above", "color": "yellow"},
+    {"slug": "blue_cube", "name": "Blue cube", "grasp": "from_above", "color": "blue"}
+  ]
+}

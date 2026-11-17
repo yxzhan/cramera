@@ -13,17 +13,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from typing_extensions import List, Optional, Sequence, Type
+from typing_extensions import List, Optional, Sequence
 
 from coraplex.plans.context_extensions import RobotAccess, StatementGrounding
-from coraplex.plans.executors import (
-    KinematicallySimulatedPlanExecutor,
-    PlanExecutor,
-)
+from coraplex.plans.executors import PlanExecutor
+from coraplex.plans.plan_transformation import PlanRewriting, PlanTransformation
+from cramera_bridge.execution import KinematicExecution, PlanExecution
 from cramph.context import ContextExtension, StatechartContext
 from cramph.executor import ExecutorExtension
 from cramph.node import StatechartNode
 from cramph.statechart import Statechart
+from giskardpy.motion_statechart.monitors.safety_monitors import SafetyEnvelope
 from krrood.entity_query_language.backends import (
     EntityQueryLanguageGenerativeBackend,
     QueryBackend,
@@ -64,6 +64,12 @@ class TaskContext:
     each run.
     """
 
+    collision_avoidance: bool = False
+    """
+    Whether every motion of the task, and every step tried before it runs, avoids
+    collisions with the robot's surroundings and with itself.
+    """
+
     extensions: List[ContextExtension] = field(default_factory=list)
     """
     Further context extensions every plan of the task runs with, such as the
@@ -83,17 +89,23 @@ class TaskContext:
         """
         if self.next_context is None:
             self.next_context = StatechartContext.with_extensions(
-                self.world,
-                [
-                    RobotAccess(self.robot),
-                    StatementGrounding(
-                        query_backend=self.query_backend,
-                        sampling_seed=self.sampling_seed,
-                    ),
-                    *self.extensions,
-                ],
+                self.world, self.context_extensions()
             )
         return self.next_context
+
+    def context_extensions(self) -> List[ContextExtension]:
+        """
+        :return: New context extensions of a plan of the task: the task's robot, how
+            its statements are grounded and :attr:`extensions`.
+        """
+        return [
+            RobotAccess(self.robot),
+            StatementGrounding(
+                query_backend=self.query_backend,
+                sampling_seed=self.sampling_seed,
+            ),
+            *self.extensions,
+        ]
 
     def take_statechart_context(self) -> StatechartContext:
         """
@@ -111,13 +123,14 @@ class TaskContext:
 @dataclass
 class PlanPerformance:
     """
-    How the plans of a task are performed: by which executor, with which settings and
+    How the plans of a task are performed: by which execution, with which settings and
     which further executor extensions.
     """
 
-    executor_type: Type[PlanExecutor] = KinematicallySimulatedPlanExecutor
+    execution: PlanExecution = field(default_factory=KinematicExecution)
     """
-    The executor running each plan, which decides how its motions are executed.
+    Gives each plan the executor that runs it, which decides how its motions are
+    executed.
     """
 
     collision_avoidance: bool = False
@@ -130,6 +143,18 @@ class PlanPerformance:
     Added to every executor, such as the extension publishing its plan.
     """
 
+    safety: SafetyEnvelope = field(default_factory=SafetyEnvelope)
+    """
+    The safety constraints every motion of every plan is held to.
+    """
+
+    plan_transformations: Sequence[PlanTransformation] = ()
+    """
+    The transformations rewriting every plan performed, whichever execution runs it,
+    after those of the plan's own
+    :class:`~coraplex.plans.plan_transformation.PlanRewriting`.
+    """
+
     def executor(
         self,
         context: TaskContext,
@@ -138,12 +163,25 @@ class PlanPerformance:
         """
         :param context: The world and the robot the plan is performed with.
         :param extensions: Added to the executor after :attr:`extensions`.
-        :return: A new executor with a context of its own.
+        :return: A new executor with a context of its own, which rewrites the plan with
+            :attr:`plan_transformations` too.
         """
-        return self.executor_type(
-            context.take_statechart_context(),
+        statechart_context = context.take_statechart_context()
+        if self.plan_transformations:
+            rewriting = (
+                statechart_context.get_extension(PlanRewriting) or PlanRewriting()
+            )
+            statechart_context.extensions[PlanRewriting] = PlanRewriting(
+                transformations=[
+                    *rewriting.transformations,
+                    *self.plan_transformations,
+                ]
+            )
+        return self.execution.executor(
+            statechart_context,
             collision_avoidance=self.collision_avoidance,
             extensions=[*self.extensions, *extensions],
+            safety=self.safety,
         )
 
     def perform(
@@ -161,6 +199,7 @@ class PlanPerformance:
         :return: The executor that ran the plan, holding its statechart.
         :raises MotionDidNotFinish: If the plan did not succeed, or another
             :class:`~coraplex.plans.failures.PlanFailure`.
+        :raises SafetyConstraintViolated: If a motion broke one of :attr:`safety`.
         """
         executor = self.executor(context, extensions)
         statechart = Statechart(context=executor.context)

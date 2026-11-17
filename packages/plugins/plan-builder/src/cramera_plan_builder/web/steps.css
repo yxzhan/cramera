@@ -26,6 +26,7 @@
 /* %% cards */
 
 .steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; border-radius: var(--radius); }
+.steps[hidden] { display: none; }
 
 .step {
   background: var(--surface-raised);
@@ -42,6 +43,15 @@
 .step-parameters { display: flex; flex-wrap: wrap; gap: 6px 10px; margin-top: 6px; align-items: flex-end; }
 .step-parameters label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--text-muted); }
 .node-status { font: 11px var(--mono); border-radius: 999px; padding: 1px 7px; background: var(--surface-sunken); color: var(--text-muted); }
+
+/* %% a step's validation */
+
+.step-validation { margin: 4px 0 0; font-size: 12px; color: var(--text-muted); }
+.step[data-validation="valid"] .step-validation { color: var(--accent); }
+.step[data-validation="assumed"] .step-validation { color: var(--warning); }
+.step[data-validation="failed"] { border-color: var(--danger); box-shadow: 0 0 0 1px var(--danger), var(--shadow); }
+.step[data-validation="failed"] .step-validation { color: var(--danger); font-weight: 600; }
+.step-validation-detail { margin: 2px 0 0; font-size: 12px; color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* %% a replayed recording's plan */
 

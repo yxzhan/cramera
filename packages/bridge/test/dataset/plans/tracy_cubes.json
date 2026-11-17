@@ -1,0 +1,24 @@
+{
+  "formatVersion": "1.3",
+  "name": "detect_and_pick_the_red_cube",
+  "task": "Detect the red cube on Tracy's table and pick it up.",
+  "robots": [
+    {
+      "id": "robot_1",
+      "model": "tracy",
+      "label": "Tracy",
+      "pose": [0, 0, 0, 0, 0, 0, 1],
+      "steps": [
+        {"id": "step_1", "action": "detect",
+         "values": {"technique": "types", "object_sem_annotation": "block", "region": {"kind": "table"}, "color": "red"}},
+        {"id": "step_2", "action": "pick_up", "values": {"grasp": "detected:step_1", "arm": "left"}}
+      ]
+    }
+  ],
+  "objects": [
+    {"id": "red_cube", "model": "cube_library/objects/cubes/red_cube/model.urdf", "pose": [0.55, 0.10, 0.906, 0, 0, 0, 1]},
+    {"id": "yellow_cube", "model": "cube_library/objects/cubes/yellow_cube/model.urdf", "pose": [0.55, 0.20, 0.906, 0, 0, 0, 1]},
+    {"id": "blue_cube", "model": "cube_library/objects/cubes/blue_cube/model.urdf", "pose": [0.55, 0.30, 0.906, 0, 0, 0, 1]}
+  ],
+  "selectedRobot": "robot_1"
+}

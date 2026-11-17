@@ -205,3 +205,76 @@ class FloorRectangle(JsonDocument):
     """
     The largest y coordinate.
     """
+
+
+class BoxKey(StrEnum):
+    """
+    The keys of an axis-aligned box.
+    """
+
+    MIN_X = "minX"
+    """
+    The smallest x coordinate.
+    """
+
+    MAX_X = "maxX"
+    """
+    The largest x coordinate.
+    """
+
+    MIN_Y = "minY"
+    """
+    The smallest y coordinate.
+    """
+
+    MAX_Y = "maxY"
+    """
+    The largest y coordinate.
+    """
+
+    MIN_Z = "minZ"
+    """
+    The smallest z coordinate.
+    """
+
+    MAX_Z = "maxZ"
+    """
+    The largest z coordinate.
+    """
+
+
+@dataclass(kw_only=True)
+class AxisAlignedBox(JsonDocument):
+    """
+    A box whose sides are parallel to the axes of the frame it is written in, in metres.
+    """
+
+    min_x: float = document_field(BoxKey.MIN_X)
+    """
+    The smallest x coordinate.
+    """
+
+    max_x: float = document_field(BoxKey.MAX_X)
+    """
+    The largest x coordinate.
+    """
+
+    min_y: float = document_field(BoxKey.MIN_Y)
+    """
+    The smallest y coordinate.
+    """
+
+    max_y: float = document_field(BoxKey.MAX_Y)
+    """
+    The largest y coordinate.
+    """
+
+    min_z: float = document_field(BoxKey.MIN_Z)
+    """
+    The smallest z coordinate.
+    """
+
+    max_z: float = document_field(BoxKey.MAX_Z)
+    """
+    The largest z coordinate.
+    """

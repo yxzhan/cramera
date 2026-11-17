@@ -13,13 +13,13 @@ its name, and the bridge's tests fail until it is pinned.
 from __future__ import annotations
 
 import functools
-import importlib
 import re
 from dataclasses import dataclass
 from enum import Enum
 
 from typing_extensions import Dict, List, Optional, Tuple
 
+from cramera.cram_imports import CramImports
 from cramera_protocol.bundle.scene import DetectedEventKind, PlanNodeKind
 
 # %% pinned classes
@@ -61,7 +61,7 @@ class PinnedClass:
         :raises AttributeError: When its module defines no such class.
         """
         module, _, name = self.path.rpartition(".")
-        return getattr(importlib.import_module(module), name)
+        return getattr(CramImports().module(module), name)
 
     def resolve_if_installed(self) -> Optional[type]:
         """
@@ -526,6 +526,30 @@ ENUMS = (
             "left",
             "right",
             "both",
+            "automatic",
+        ),
+    ),
+    PinnedEnum(
+        "color",
+        "semantic_digital_twin.world_description.color_names.ColorName",
+        (
+            "red",
+            "yellow",
+            "green",
+            "cyan",
+            "blue",
+            "magenta",
+            "white",
+            "black",
+            "grey",
+        ),
+    ),
+    PinnedEnum(
+        "object_type",
+        "cramera_bridge.plans.object_types.ObjectType",
+        (
+            "object",
+            "block",
         ),
     ),
     PinnedEnum(
@@ -616,6 +640,8 @@ FIELDS = {
         "region",
         "trust_detected_orientation",
         "accept_first_if_multiple",
+        "color",
+        "attributes",
     ),
     "elevator_navigation": (
         "elevator",
